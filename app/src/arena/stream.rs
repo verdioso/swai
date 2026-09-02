@@ -60,6 +60,9 @@ pub struct StageState {
     pub generating: bool,
     /// Human-readable footer text.
     pub footer: String,
+    /// Human guidance injected by a "Chime In" intervention, if any. When
+    /// present the card header shows a distinct 👤 badge.
+    pub human_intervention: Option<String>,
 }
 
 impl StageState {
@@ -101,6 +104,17 @@ impl StageState {
                         StageStatus::Failed { error } => self.footer = format!("failed: {error}"),
                         StageStatus::Running => self.footer = "generating…".to_string(),
                     }
+                }
+            }
+            ArenaStreamAction::HumanIntervention {
+                stage_index,
+                feedback,
+            } => {
+                // Record the human guidance on the stage the pipeline is about
+                // to resume into. The badge persists so it stays visible even
+                // after the stage completes.
+                if self.stage_index == Some(*stage_index) {
+                    self.human_intervention = Some(feedback.clone());
                 }
             }
         }
@@ -222,6 +236,22 @@ impl StageBubbleCard {
 
         let role = gtk::Label::new(model.role_label.as_deref());
         role.add_css_class("title-2");
+
+        // Human intervention badge: 👤 Human Intervention, shown alongside the
+        // role when a "Chime In" injected guidance into this stage.
+        if let Some(feedback) = &model.human_intervention {
+            let badge = gtk::Label::new(Some("👤 Human Intervention"));
+            badge.add_css_class("badge");
+            badge.add_css_class("human-intervention-badge");
+            // Build the tooltip text up front so it outlives the call.
+            let tooltip: String = if feedback.trim().is_empty() {
+                "Human resumed without changes".to_string()
+            } else {
+                format!("Human intervention guidance:\n{feedback}")
+            };
+            badge.set_tooltip_text(Some(&tooltip));
+            header.append(&badge);
+        }
 
         let model_label = gtk::Label::new(model.model_id.as_deref());
         model_label.set_css_classes(&["dim-label"]);

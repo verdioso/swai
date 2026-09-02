@@ -1,5 +1,6 @@
 use super::pipeline::*;
 use super::types::*;
+use super::Executor;
 
 struct MockExecutor {
     responses: Vec<String>,

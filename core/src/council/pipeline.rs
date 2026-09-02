@@ -11,15 +11,15 @@
 //! observe live progress. Emission order is strictly:
 //! `StageStarted` -> `TokenChunk`(s) -> `StageCompleted` -> `PipelineCompleted`.
 
+use crate::council::barrier::CouncilPauseController;
 use crate::council::events::CouncilEvent;
 use crate::council::types::{
     CouncilPipelineConfig, CouncilRole, DebateOutcome, DebateTranscript, FallbackAction,
     PipelineStage, TurnResult,
 };
+use crate::council::human_feedback;
+use crate::council::Executor;
 use std::time::Instant;
-
-/// Buffered characters before a streaming token chunk is emitted.
-const STREAM_CHUNK_BUDGET: usize = 16;
 
 /// Errors that can occur during council pipeline execution.
 #[derive(Debug, thiserror::Error)]
@@ -30,56 +30,6 @@ pub enum CouncilError {
     StageFailed(String),
     #[error("aborted: {0}")]
     Aborted(String),
-}
-
-/// Abstraction over the LLM inference backend used by each debate stage.
-pub trait Executor: Send + Sync {
-    fn execute(&self, stage: &PipelineStage, input: &str) -> Result<String, String>;
-
-    /// Stream a stage's output, emitting one `CouncilEvent::TokenChunk` per
-    /// delta as it is produced. The default implementation runs the
-    /// non-streaming `execute` and splits its output into word-sized chunks,
-    /// which is sufficient for backends that do not expose live streaming.
-    fn execute_stream(
-        &self,
-        stage: &PipelineStage,
-        input: &str,
-        stage_index: usize,
-        emit: &dyn Fn(&CouncilEvent),
-    ) -> Result<String, String> {
-        let output = self.execute(stage, input)?;
-        for chunk in chunk_output(&output) {
-            emit(&CouncilEvent::TokenChunk {
-                stage_index,
-                text: chunk,
-            });
-        }
-        Ok(output)
-    }
-}
-
-/// Split generated text into streaming token chunks.
-///
-/// Chunks are bounded by `STREAM_CHUNK_BUDGET` characters or whitespace, and
-/// concatenating them in order reconstructs the original text exactly. An
-/// empty input yields a single empty chunk so a stage always emits at least
-/// one token event.
-fn chunk_output(text: &str) -> Vec<String> {
-    let mut chunks: Vec<String> = Vec::new();
-    let mut buf = String::new();
-    for ch in text.chars() {
-        buf.push(ch);
-        if ch.is_whitespace() || buf.len() >= STREAM_CHUNK_BUDGET {
-            chunks.push(std::mem::take(&mut buf));
-        }
-    }
-    if !buf.is_empty() {
-        chunks.push(buf);
-    }
-    if chunks.is_empty() {
-        chunks.push(text.to_string());
-    }
-    chunks
 }
 
 /// Mutable state carried through a single debate execution.
@@ -128,6 +78,9 @@ pub struct CouncilEngine<E: Executor> {
     pub config: CouncilPipelineConfig,
     pub executor: E,
     events: Option<tokio::sync::broadcast::Sender<CouncilEvent>>,
+    /// Shared human-in-the-loop pause barrier. When `Some`, the pipeline
+    /// pauses before executing the Synthesizer stage unless the human resumes.
+    pause_controller: Option<CouncilPauseController>,
 }
 
 impl<E: Executor> CouncilEngine<E> {
@@ -136,6 +89,7 @@ impl<E: Executor> CouncilEngine<E> {
             config,
             executor,
             events: None,
+            pause_controller: None,
         }
     }
 
@@ -149,7 +103,21 @@ impl<E: Executor> CouncilEngine<E> {
             config,
             executor,
             events: Some(events),
+            pause_controller: None,
         }
+    }
+
+    /// Enable human-in-the-loop interruption. When set, the pipeline pauses
+    /// before the Synthesizer stage (if a pause is requested) and injects any
+    /// human feedback into the synthesizer prompt.
+    pub fn with_pause_controller(mut self, controller: CouncilPauseController) -> Self {
+        self.pause_controller = Some(controller);
+        self
+    }
+
+    /// The pause controller for this engine, if human-in-the-loop mode is on.
+    pub fn pause_controller(&self) -> Option<&CouncilPauseController> {
+        self.pause_controller.as_ref()
     }
 
     /// Forward an event to every active subscriber. A disconnected
@@ -341,9 +309,25 @@ impl<E: Executor> CouncilEngine<E> {
         } else {
             state.audit_results.join("\n\n---\n\n")
         };
-        let prompt = format!(
-            "Original prompt:\n{}\n\nDraft response:\n{}\n\nAudit critiques:\n{}",
-            state.transcript.input_prompt, draft, critiques
+
+        // Human-in-the-loop gate: pause before the Synthesizer stage if the
+        // user has "Chimed In". Block until they resume (optionally with
+        // feedback). Any injected guidance becomes an authoritative turn in
+        // the transcript and is prepended to the prompt.
+        let human_feedback = self.await_human_gate();
+        if human_feedback.is_some() {
+            self.emit(CouncilEvent::HumanIntervention {
+                stage_index,
+                feedback: human_feedback.clone().unwrap_or_default(),
+            });
+        }
+
+        let prompt = human_feedback::build_synthesizer_prompt(
+            &self.config,
+            &state.transcript.input_prompt,
+            draft,
+            &critiques,
+            human_feedback.as_deref(),
         );
 
         self.emit(CouncilEvent::StageStarted {
@@ -368,6 +352,18 @@ impl<E: Executor> CouncilEngine<E> {
                     tok_per_sec: 0.0,
                 });
                 state.draft = Some(output.clone());
+                // Record the human intervention as an authoritative turn so it
+                // appears with a distinct badge in the transcript.
+                if let Some(feedback) = &human_feedback {
+                    state.transcript.append_turn(TurnResult {
+                        turn_index: state.transcript.turns.len(),
+                        role: CouncilRole::Custom("Human Intervention".into()),
+                        model_id: "human".into(),
+                        output: feedback.clone(),
+                        duration: std::time::Duration::ZERO,
+                        error: None,
+                    });
+                }
                 state.transcript.append_turn(TurnResult {
                     turn_index: state.transcript.turns.len(),
                     role: CouncilRole::Synthesizer,
@@ -385,6 +381,19 @@ impl<E: Executor> CouncilEngine<E> {
                 state.handle_failure(&self.config.fallback, state.transcript.turns.len(), &err);
             }
         }
+    }
+
+    /// Wait at the human-in-the-loop barrier before the Synthesizer runs.
+    ///
+    /// If a pause controller is present and a pause was requested, block until
+    /// the human resumes (with or without feedback) or aborts. Returns the
+    /// injected human feedback, if any. The gate consumes the decision and
+    /// clears the pause flag atomically, so a later gate will not block again.
+    fn await_human_gate(&self) -> Option<String> {
+        let Some(controller) = &self.pause_controller else {
+            return None;
+        };
+        human_feedback::await_human_gate(controller)
     }
 
     fn build_outcome(&self, state: DebateState) -> DebateOutcome {

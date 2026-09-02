@@ -3,7 +3,7 @@
 //! Provides the proxy execution bridge between incoming client requests
 //! targeting synthetic "council" models and the local `CouncilEngine`.
 
-use crate::council::pipeline::Executor;
+use crate::council::Executor;
 use crate::council::types::{DebateOutcome, PipelineStage};
 use crate::council::CouncilEvent;
 use crate::council::CouncilPipelineConfig;

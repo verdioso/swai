@@ -9,7 +9,8 @@
 //! disconnected-subscriber resilience, and late subscribers.
 
 use crate::council::events::CouncilEvent;
-use crate::council::pipeline::{CouncilEngine, Executor};
+use crate::council::pipeline::CouncilEngine;
+use crate::council::Executor;
 use crate::council::types::{
     CouncilPipelineConfig, CouncilRole, DebateOutcome, DebateTranscript, PipelineStage,
 };
@@ -129,7 +130,9 @@ fn assert_started_token_completed(events: &[CouncilEvent]) {
                 pending_start = None;
                 seen_chunks = 0;
             }
-            CouncilEvent::PipelineCompleted { .. } | CouncilEvent::PipelineFailed { .. } => {
+            CouncilEvent::PipelineCompleted { .. }
+            | CouncilEvent::PipelineFailed { .. }
+            | CouncilEvent::HumanIntervention { .. } => {
                 assert!(
                     pending_start.is_none(),
                     "pipeline terminated while a stage was still open"

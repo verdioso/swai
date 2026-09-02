@@ -54,6 +54,15 @@ pub enum CouncilEvent {
         /// The fully synthesized transcript of the debate.
         full_transcript: DebateTranscript,
     },
+    /// A human ("Chime In") intervened between stages. Emitted right before
+    /// the paused stage resumes so the UI can render the intervention with a
+    /// distinct badge. `feedback` is the user's authoritative guidance, if any.
+    HumanIntervention {
+        /// Zero-based index of the stage the pipeline is about to resume into.
+        stage_index: usize,
+        /// The human's guidance text, if the user injected any.
+        feedback: String,
+    },
     /// The pipeline failed. Emitted when a stage errors (subject to the
     /// pipeline's fallback policy).
     PipelineFailed {
@@ -73,6 +82,7 @@ impl CouncilEvent {
             CouncilEvent::TokenChunk { .. } => "token_chunk",
             CouncilEvent::StageCompleted { .. } => "stage_completed",
             CouncilEvent::PipelineCompleted { .. } => "pipeline_completed",
+            CouncilEvent::HumanIntervention { .. } => "human_intervention",
             CouncilEvent::PipelineFailed { .. } => "pipeline_failed",
         }
     }
@@ -86,7 +96,8 @@ impl CouncilEvent {
             CouncilEvent::StageStarted { stage_index, .. }
             | CouncilEvent::TokenChunk { stage_index, .. }
             | CouncilEvent::StageCompleted { stage_index, .. }
-            | CouncilEvent::PipelineFailed { stage_index, .. } => Some(*stage_index),
+            | CouncilEvent::PipelineFailed { stage_index, .. }
+            | CouncilEvent::HumanIntervention { stage_index, .. } => Some(*stage_index),
             CouncilEvent::PipelineCompleted { .. } => None,
         }
     }

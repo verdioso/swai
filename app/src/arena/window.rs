@@ -29,6 +29,7 @@ use gtk::prelude::*;
 use gtk4 as gtk;
 use swai_core::council::{CouncilEvent, DebateTranscript};
 
+use super::chime_in::ChimeIn;
 use super::history;
 use super::stream::StageBubbleCard;
 use super::types::{event_to_action, stage_index_of, ArenaStreamAction};
@@ -49,6 +50,9 @@ pub struct ArenaWindow {
     live_empty: gtk::Label,
     /// Right panel containing the transcript view.
     transcript_view: gtk::ScrolledWindow,
+    /// The "Chime In" human-in-the-loop control, shown in the header while a
+    /// live debate runs.
+    chime_in: ChimeIn,
     /// Currently loaded transcript (if any).
     current_transcript: Rc<RefCell<Option<DebateTranscript>>>,
 }
@@ -56,7 +60,8 @@ pub struct ArenaWindow {
 impl ArenaWindow {
     /// Create a new ArenaWindow.
     pub fn new() -> Self {
-        let (widget, debate_list, live_panel, live_empty, transcript_view) = build_window();
+        let (widget, debate_list, live_panel, live_empty, transcript_view, chime_in) =
+            build_window();
 
         let stage_cards = Rc::new(RefCell::new(Vec::new()));
         let current_transcript = Rc::new(RefCell::new(None::<DebateTranscript>));
@@ -70,6 +75,7 @@ impl ArenaWindow {
             stage_cards,
             live_empty,
             transcript_view,
+            chime_in,
             current_transcript,
         }
     }
@@ -235,6 +241,7 @@ fn build_window() -> (
     gtk::Box,
     gtk::Label,
     gtk::ScrolledWindow,
+    ChimeIn,
 ) {
     let widget = gtk::ApplicationWindow::builder()
         .title("Arena — Debate")
@@ -253,6 +260,17 @@ fn build_window() -> (
     header.pack_start(&new_btn);
     header.pack_end(&save_btn);
     widget.set_titlebar(Some(&header));
+
+    // Chime In control (human-in-the-loop). Shown in the header; clicking it
+    // opens a drawer with a guidance editor and Inject / Skip decisions.
+    let chime_in = ChimeIn::new();
+    let chime_in_button = chime_in.button();
+    chime_in_button.set_margin_end(6);
+    header.pack_end(&chime_in_button);
+    // Placeholder decision handler: the owning app wires this to the pause
+    // controller. Until then, log the decision so the widget is exercised.
+    let chime_in_for_handler = chime_in.clone();
+    chime_in_on_decision(chime_in_for_handler);
 
     let main_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
 
@@ -321,7 +339,14 @@ fn build_window() -> (
 
     widget.set_child(Some(&main_box));
 
-    (widget, debate_list, live_panel, live_empty, transcript_view)
+    (
+        widget,
+        debate_list,
+        live_panel,
+        live_empty,
+        transcript_view,
+        chime_in,
+    )
 }
 
 /// Wire the sidebar selection handler to load debates into the transcript view.
@@ -374,4 +399,24 @@ fn populate_debate_list(listbox: &gtk::ListBox) {
         row.set_child(Some(&label));
         listbox.append(&row);
     }
+}
+
+/// Wire the "Chime In" widget's decision handler.
+///
+/// The pipeline's pause controller lives in the core backend (see
+/// `core/src/council/barrier.rs`); wiring the widget's decisions to it is the
+/// owning app's responsibility. Until then, log the decision so the widget is
+/// exercised and the human-in-the-loop path remains reachable.
+fn chime_in_on_decision(chime: ChimeIn) {
+    chime.on_decision(|decision| match decision {
+        super::chime_in::ChimeInDecision::Inject { guidance } => {
+            tracing::info!(
+                "Chime In: injecting guidance ({}) at next stage gate",
+                guidance.len()
+            );
+        }
+        super::chime_in::ChimeInDecision::Skip => {
+            tracing::info!("Chime In: resuming without changes at next stage gate");
+        }
+    });
 }

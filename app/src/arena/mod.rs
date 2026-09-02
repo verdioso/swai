@@ -7,6 +7,7 @@
 //! `CouncilEvent`s and streams tokens into stage bubble cards; the historical
 //! sublayer (`history`, `view`, `window`) renders saved debates.
 
+pub mod chime_in;
 pub mod history;
 pub mod stream;
 pub mod types;

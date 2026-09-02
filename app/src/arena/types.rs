@@ -55,6 +55,15 @@ pub enum ArenaStreamAction {
         /// Terminal status for the stage.
         status: StageStatus,
     },
+    /// A human ("Chime In") intervened before the stage at `stage_index`,
+    /// optionally injecting authoritative guidance. `feedback` is empty when
+    /// the human resumed without changes. Rendered with a distinct badge.
+    HumanIntervention {
+        /// Zero-based stage index the pipeline is about to resume into.
+        stage_index: usize,
+        /// The human's guidance text, if any.
+        feedback: String,
+    },
 }
 
 /// Map a core `CouncilRole` to a short, stable UI label.
@@ -113,6 +122,13 @@ pub fn event_to_action(event: &swai_core::council::CouncilEvent) -> Option<Arena
             },
         }),
         CouncilEvent::PipelineCompleted { .. } => None,
+        CouncilEvent::HumanIntervention {
+            stage_index,
+            feedback,
+        } => Some(ArenaStreamAction::HumanIntervention {
+            stage_index: *stage_index,
+            feedback: feedback.clone(),
+        }),
     }
 }
 
@@ -124,7 +140,8 @@ pub fn stage_index_of(action: &ArenaStreamAction) -> usize {
     match action {
         ArenaStreamAction::StageStarted { stage_index, .. }
         | ArenaStreamAction::AppendToken { stage_index, .. }
-        | ArenaStreamAction::SetStageStatus { stage_index, .. } => *stage_index,
+        | ArenaStreamAction::SetStageStatus { stage_index, .. }
+        | ArenaStreamAction::HumanIntervention { stage_index, .. } => *stage_index,
     }
 }
 
@@ -229,6 +246,33 @@ mod tests {
                 )
             }),
             None
+        );
+
+        // Human intervention maps to a dedicated action carrying the guidance.
+        let intervention = event_to_action(&CouncilEvent::HumanIntervention {
+            stage_index: 2,
+            feedback: "Handle edge cases".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            intervention,
+            ArenaStreamAction::HumanIntervention {
+                stage_index: 2,
+                feedback: "Handle edge cases".into(),
+            }
+        );
+        // Resuming without changes carries empty feedback.
+        let no_feedback = event_to_action(&CouncilEvent::HumanIntervention {
+            stage_index: 2,
+            feedback: String::new(),
+        })
+        .unwrap();
+        assert_eq!(
+            no_feedback,
+            ArenaStreamAction::HumanIntervention {
+                stage_index: 2,
+                feedback: String::new()
+            }
         );
     }
 }

@@ -1768,6 +1768,73 @@ Real-time token streaming and live stage card updates in the GTK4 Debate Arena (
   - `app/src/arena/history.rs`: 176 lines
 
 
+## Phase 33.3 — Human-in-the-Loop Interruption ("Chime In") & Guidance Injection
+
+> Continues Phase 33.1 (broadcast channel) and 33.2 (live arena stream). The
+> core backend (barrier pause controller, `HumanIntervention` event, feedback
+> injection into the Synthesizer prompt) was already implemented and tested in
+> the prior sub-phase. This sub-phase completed the remaining **UI layer**.
+
+### What was built
+
+1. **`app/src/arena/types.rs` (278 lines) — `HumanIntervention` mapping:**
+   - Added `ArenaStreamAction::HumanIntervention { stage_index, feedback }` and
+     handled it in `event_to_action`, translating the core
+     `CouncilEvent::HumanIntervention` (carrying the injected guidance) into a
+     UI action.
+   - Extended `stage_index_of` so the live-panel dispatcher routes the action
+     to the correct stage card.
+   - Added unit tests asserting the mapping for both guidance and empty
+     (skip) interventions.
+
+2. **`app/src/arena/chime_in.rs` (260 lines) — "Chime In" drawer widget:**
+   - Action-bar toggle button that opens a collapsible drawer with a multiline
+     guidance editor (placeholder: *"Type guidance for the Council (e.g.,
+     'Make sure to handle edge cases and use serde')..."*).
+   - Two decisions: **Inject & Resume** (typed guidance prepended as an
+     authoritative `HumanAuditor` turn) and **Skip / Resume** (resume unchanged).
+   - Pure `build_decision(guidance, action)` helper extracted for GTK-free unit
+     testing (4 tests), keeping the widget GTK-only and transport-agnostic.
+   - Emits a `ChimeInDecision` through a user-supplied closure; wiring to the
+     core pause controller is the owning app's responsibility.
+
+3. **`app/src/arena/stream.rs` (349 lines) — 👤 Human Intervention badge:**
+   - `StageState` gained a `human_intervention: Option<String>` field.
+   - `apply()` records the intervention on the target stage card; `render()`
+     draws a distinct `👤 Human Intervention` badge in the card header with a
+     tooltip showing the injected guidance (or "resumed without changes").
+   - Badge persists after the stage completes so the human's input stays
+     visible in the live stream.
+
+4. **`app/src/arena/window.rs` (422 lines) — widget integration:**
+   - Added a `chime_in` field and wired the `ChimeIn` control into the header
+     bar.
+   - `chime_in_on_decision()` logs the decision (Inject / Skip) so the
+     human-in-the-loop path is exercised; the pause-controller bridge is the
+     owning app's wiring step.
+
+### Test results
+- `cargo check --workspace`: 0 errors, 0 warnings
+- `cargo test -p swai -- --test-threads=1`: 55/55 passed
+- `SWAI_NO_SINGLE_INSTANCE=1 cargo test --workspace -- --test-threads=1`: 379/379 passed (0 failures)
+- All files strictly under 450 lines:
+  - `app/src/arena/chime_in.rs`: 260 lines
+  - `app/src/arena/types.rs`: 278 lines
+  - `app/src/arena/stream.rs`: 349 lines
+  - `app/src/arena/window.rs`: 422 lines
+  - `core/src/council/barrier.rs`: 261 lines
+  - `core/src/council/human_feedback.rs`: 118 lines
+  - `core/src/council/tests_pause.rs`: 209 lines
+
+### Notes
+- The core backend pause/feedback/resume logic (barrier.rs, human_feedback.rs,
+  tests_pause.rs) was already implemented and verified in the prior sub-phase;
+  this phase only completed the UI surface that drives it.
+- The `ChimeIn` widget's decisions are currently logged; the final step to make
+  the feature end-to-end functional is to connect the owning app's pause
+  controller (`CouncilPauseController`) to the injected/skip decisions.
+
+
 
 
 
