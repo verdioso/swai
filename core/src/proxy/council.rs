@@ -3,10 +3,11 @@
 //! Provides the proxy execution bridge between incoming client requests
 //! targeting synthetic "council" models and the local `CouncilEngine`.
 
-use reqwest::blocking::Client;
 use crate::council::pipeline::Executor;
 use crate::council::types::{DebateOutcome, PipelineStage};
+use crate::council::CouncilEvent;
 use crate::council::CouncilPipelineConfig;
+use reqwest::blocking::Client;
 
 /// Check if a model name targets the council engine.
 ///
@@ -46,7 +47,12 @@ impl Executor for ProxyExecutor {
     fn execute(&self, stage: &PipelineStage, input: &str) -> Result<String, String> {
         let target_port = {
             if let Ok(state) = self.state.lock() {
-                state.active_models.iter().find(|(id, _)| *id == &stage.model_id).map(|(_, port)| *port).unwrap_or(self.primary_port)
+                state
+                    .active_models
+                    .iter()
+                    .find(|(id, _)| *id == &stage.model_id)
+                    .map(|(_, port)| *port)
+                    .unwrap_or(self.primary_port)
             } else {
                 self.primary_port
             }
@@ -57,7 +63,7 @@ impl Executor for ProxyExecutor {
         } else {
             input.to_string()
         };
-        
+
         let mut messages = Vec::new();
         if let Some(ref sys) = stage.system_prompt {
             if !sys.is_empty() {
@@ -99,12 +105,46 @@ impl Executor for ProxyExecutor {
     }
 }
 
+/// Wraps a `ProxyExecutor` and forwards every `CouncilEvent` it emits to the
+/// live broadcast receiver registered on the proxy state.
+///
+/// This is the bridge that lets the UI observe a debate as it streams: the
+/// wrapped `ProxyExecutor` produces the tokens, while the wrapper fans the
+/// emitted events out to any subscriber.
+pub struct EventProxyExecutor {
+    pub inner: ProxyExecutor,
+}
+
+impl Executor for EventProxyExecutor {
+    fn execute(&self, stage: &PipelineStage, input: &str) -> Result<String, String> {
+        self.inner.execute(stage, input)
+    }
+
+    fn execute_stream(
+        &self,
+        stage: &PipelineStage,
+        input: &str,
+        stage_index: usize,
+        emit: &dyn Fn(&CouncilEvent),
+    ) -> Result<String, String> {
+        self.inner.execute_stream(stage, input, stage_index, emit)
+    }
+}
+
 /// Execute council debate and record telemetry in ProxyState.
-pub fn run_council_and_record_telemetry(
-    engine: &crate::council::CouncilEngine<ProxyExecutor>,
+///
+/// Generic over the executor type so it works with both the plain
+/// `ProxyExecutor` and the event-emitting `EventProxyExecutor`. The engine is
+/// expected to have been constructed with `CouncilEngine::with_events`, so any
+/// registered UI subscriber receives live `CouncilEvent`s as the debate runs.
+pub fn run_council_and_record_telemetry<E: Executor>(
+    engine: &crate::council::CouncilEngine<E>,
     prompt: &str,
     state: &Arc<Mutex<ProxyState>>,
-) -> (DebateOutcome, Vec<crate::proxy::state::CouncilStageTelemetry>) {
+) -> (
+    DebateOutcome,
+    Vec<crate::proxy::state::CouncilStageTelemetry>,
+) {
     let outcome = engine.execute(prompt);
     let mut stages = Vec::new();
     let mut total_tokens = 0;
@@ -127,7 +167,11 @@ pub fn run_council_and_record_telemetry(
             let stage_title = format!("Stage {} ({})", i + 1, role_name);
             let tokens = (turn.output.len() / 4).max(1);
             let dur_sec = turn.duration.as_secs_f64();
-            let speed = if dur_sec > 0.0 { tokens as f64 / dur_sec } else { 0.0 };
+            let speed = if dur_sec > 0.0 {
+                tokens as f64 / dur_sec
+            } else {
+                0.0
+            };
             total_tokens += tokens;
             total_duration += dur_sec;
             stages.push(crate::proxy::state::CouncilStageTelemetry {
@@ -171,10 +215,19 @@ pub fn build_council_sse_events(outcome: &DebateOutcome, _model_id: &str) -> Vec
 
     let log_path = log_dir.join(format!("{}.md", transcript.session_id));
     let mut md = String::new();
-    md.push_str(&format!("# Council Debate Transcript: {}\n\n", transcript.session_id));
-    md.push_str(&format!("## Original Prompt\n```\n{}\n```\n\n", transcript.input_prompt));
+    md.push_str(&format!(
+        "# Council Debate Transcript: {}\n\n",
+        transcript.session_id
+    ));
+    md.push_str(&format!(
+        "## Original Prompt\n```\n{}\n```\n\n",
+        transcript.input_prompt
+    ));
     for turn in &transcript.turns {
-        md.push_str(&format!("## Turn {} - {:?} ({})\n", turn.turn_index, turn.role, turn.model_id));
+        md.push_str(&format!(
+            "## Turn {} - {:?} ({})\n",
+            turn.turn_index, turn.role, turn.model_id
+        ));
         md.push_str(&format!("Duration: {:.2?}\n", turn.duration));
         if let Some(err) = &turn.error {
             md.push_str(&format!("**Error:** {}\n", err));
@@ -190,8 +243,7 @@ pub fn build_council_sse_events(outcome: &DebateOutcome, _model_id: &str) -> Vec
     let final_text = match outcome {
         DebateOutcome::Success { final_response, .. } => final_response.clone(),
         DebateOutcome::Partial {
-            fallback_response,
-            ..
+            fallback_response, ..
         } => {
             format!("Debate partial: {}", fallback_response)
         }

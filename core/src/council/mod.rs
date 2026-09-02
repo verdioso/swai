@@ -3,6 +3,7 @@
 //! Defines data types, pipeline configuration, and debate transcript
 //! structures for coordinating multiple LLM agents in a council pattern.
 
+pub mod events;
 pub mod pipeline;
 pub mod streaming;
 pub mod types;
@@ -13,8 +14,11 @@ mod tests;
 #[cfg(test)]
 mod tests_pipeline;
 #[cfg(test)]
+mod tests_sse;
+#[cfg(test)]
 mod tests_streaming;
 
+pub use events::CouncilEvent;
 pub use pipeline::{CouncilEngine, CouncilError, Executor};
 pub use types::{
     CouncilMode, CouncilPipelineConfig, CouncilRole, DebateOutcome, DebateTranscript,

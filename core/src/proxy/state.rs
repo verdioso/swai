@@ -1,4 +1,6 @@
+use crate::council::CouncilEvent;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 /// Shared state between the proxy server and the application.
 ///
@@ -8,7 +10,7 @@ use std::collections::HashMap;
 ///
 /// In multi-model mode, `active_models` holds all concurrently running models;
 /// `primary_port` is the port of the first-started model (fallback target).
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ProxyState {
     /// The port of the primary (first-started) active model server.
     /// `None` means no model is running.
@@ -44,6 +46,15 @@ pub struct ProxyState {
 
     /// Telemetry data from the latest Council pipeline execution.
     pub last_council_telemetry: Option<CouncilTelemetryData>,
+
+    /// Receiver for live Council pipeline events broadcast during a debate.
+    ///
+    /// When present, the proxy router forwards the active Council event
+    /// receiver to the application layer so the UI can subscribe and display
+    /// real-time stage transitions, token chunks, and execution metrics. The
+    /// receiver is `Arc<Mutex<...>>` so it can be shared across threads while
+    /// remaining behind the same lock as the rest of the proxy state.
+    pub events_rx: Option<Arc<Mutex<tokio::sync::broadcast::Receiver<CouncilEvent>>>>,
 }
 
 /// Telemetry metrics for an individual stage in a council debate.
@@ -77,6 +88,7 @@ impl Default for ProxyState {
             enable_council: true,
             compaction_threshold_pct: crate::compaction::DEFAULT_THRESHOLD_PCT,
             last_council_telemetry: None,
+            events_rx: None,
         }
     }
 }
@@ -166,6 +178,15 @@ impl ProxyState {
     /// Mark the proxy as loading (model is starting/restarting).
     pub fn set_loading(&mut self) {
         self.is_loading = true;
+    }
+
+    /// Register the live Council event receiver so the application layer can
+    /// subscribe to real-time pipeline events. Pass `None` to clear it.
+    pub fn set_events_receiver(
+        &mut self,
+        rx: Option<Arc<Mutex<tokio::sync::broadcast::Receiver<CouncilEvent>>>>,
+    ) {
+        self.events_rx = rx;
     }
 
     /// Clear all model state and mark as not loading.

@@ -1656,6 +1656,85 @@ Implemented a Unix Domain Socket IPC interface so terminal commands (`swai start
 - All files strictly under 450 lines (aiming < 380 lines)
 
 
+## Phase 33.1 — Council Pipeline Event Broadcast Channel
+
+### What was built
+
+An asynchronous broadcast event system in `core/src/council/` that emits
+real-time stage transitions, token-stream chunks, and execution metrics so the
+UI can listen and display live updates during Council debates.
+
+1. **`core/src/council/events.rs` (< 150 lines) — `CouncilEvent` enum:**
+   - `StageStarted { stage_index, role, model_id, model_name }`
+   - `TokenChunk { stage_index, text }`
+   - `StageCompleted { stage_index, full_text, duration_sec, tok_per_sec }`
+   - `PipelineCompleted { full_transcript: DebateTranscript }`
+   - `PipelineFailed { stage_index, error }`
+   - Helper methods: `kind()` (stable category label) and `stage_index()`
+     (returns `None` for `PipelineCompleted`).
+   - All variants are `Clone` + `Send + Sync` (serde-serializable) so they
+     cross thread boundaries freely.
+
+2. **`core/src/council/pipeline.rs` (< 450 lines) — event emission:**
+   - `CouncilEngine` gained an optional
+     `Option<tokio::sync::broadcast::Sender<CouncilEvent>>` subscriber.
+   - New constructor `CouncilEngine::with_events(config, executor, sender)`.
+   - New `Executor::execute_stream` trait method (default impl chunks the
+     non-streaming output into `TokenChunk`s) so backends can override live
+     streaming.
+   - Emission points: `StageStarted` when a stage begins, `TokenChunk` per
+     delta, `StageCompleted` when the stage finishes, and a terminal
+     `PipelineCompleted` with the final synthesized transcript. `PipelineFailed`
+     is emitted when a stage errors.
+   - Strict order guaranteed per stage: `StageStarted -> TokenChunk(s) ->
+     StageCompleted`, with `PipelineCompleted` always emitted last.
+   - `emit()` swallows disconnected-subscriber errors, so event loss never
+     breaks a debate.
+
+3. **`core/src/proxy/state.rs` (< 350 lines) — receiver exposure:**
+   - Added `events_rx: Option<Arc<Mutex<tokio::sync::broadcast::Receiver<CouncilEvent>>>>`
+     to `ProxyState` (removed the now-unnecessary `Clone` derive — `ProxyState`
+     is only ever used behind `Arc<Mutex<...>>`).
+   - New `set_events_receiver(...)` accessor for the app layer.
+
+4. **`core/src/proxy/council.rs` + `router.rs` (< 350 / 450 lines) — wiring:**
+   - New `EventProxyExecutor` wrapper that forwards every `CouncilEvent` from
+     the wrapped `ProxyExecutor` to the live broadcast receiver.
+   - `run_council_and_record_telemetry` is now generic over the executor type,
+     so it works with both the plain and event-emitting executors.
+   - `router.rs` now constructs the engine with `with_events`, registers the
+     live receiver on the proxy state via `set_events_receiver`, and exposes a
+     `BROADCAST_CAPACITY` constant.
+
+5. **`core/src/council/tests_streaming.rs` (< 300 lines) + `tests_sse.rs`:**
+   - Moved the existing SSE-formatting tests into `tests_sse.rs` (deduplicated
+     module registration).
+   - New `tests_streaming.rs` verifies the strict emission order
+     (`StageStarted -> TokenChunk(s) -> StageCompleted -> PipelineCompleted`),
+     that `PipelineCompleted` is always emitted exactly once, and tokio
+     broadcast semantics (multiple subscribers, late subscribers, and
+     resilience to a sender with no receiver).
+
+### Thread safety
+- `CouncilEvent` is `Clone + Send + Sync`; the broadcast channel is the
+  canonical multi-writer / multi-reader primitive.
+- The receiver is stored behind `Arc<Mutex<...>>` alongside the rest of the
+  proxy state, so concurrent access is serialized exactly as the rest of the
+  proxy already is.
+- Emission happens synchronously on the debate thread; subscribers drain the
+  bounded channel on their own threads.
+
+### Test results
+- `cargo check --workspace`: 0 errors, 0 warnings
+- `cargo test -p swai-core --lib council::tests_streaming`: 5/5 passed
+- `SWAI_NO_SINGLE_INSTANCE=1 cargo test --workspace -- --test-threads=1`: 349/349 passed (0 failures)
+- All touched files strictly under 450 lines:
+  - `events.rs` 93, `pipeline.rs` 419, `mod.rs` 27, `tests_streaming.rs` 327,
+    `tests_sse.rs` 217, `proxy/state.rs` 202, `proxy/council.rs` 295,
+    `proxy/router.rs` 439
+
+
+
 
 
 

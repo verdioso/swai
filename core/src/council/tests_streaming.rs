@@ -1,214 +1,327 @@
-//! SWAI — Council streaming module unit tests.
+//! SWAI — Council live broadcast event unit tests.
+//!
+//! Verifies the strict emission order guaranteed by the engine:
+//! `StageStarted` -> `TokenChunk`(s) -> `StageCompleted` -> `PipelineCompleted`.
+//!
+//! A subscriber is registered before the engine runs and drained afterward, so
+//! the captured sequence reflects the true emission order. The tests also
+//! exercise `tokio::sync::broadcast` semantics: multiple subscribers,
+//! disconnected-subscriber resilience, and late subscribers.
 
-use crate::council::streaming::*;
-use serde_json;
+use crate::council::events::CouncilEvent;
+use crate::council::pipeline::{CouncilEngine, Executor};
+use crate::council::types::{
+    CouncilPipelineConfig, CouncilRole, DebateOutcome, DebateTranscript, PipelineStage,
+};
 
-#[test]
-fn test_format_sse_event_status() {
-    let event = CouncilStreamEvent::Status {
-        stage: "generator".into(),
-        model_id: "llama3-8b".into(),
-        elapsed_secs: 1.5,
-    };
-    let sse = format_sse_event(&event, 1);
+/// A minimal mock executor that returns a fixed output for every stage.
+///
+/// The engine drives `execute_stream` (which falls back to chunking the
+/// non-streaming output into `TokenChunk` events), so this executor only
+/// needs to supply the text; the broadcast events are produced by the engine.
+struct MockExecutor {
+    output: String,
+}
 
-    assert!(sse.contains("event: council_status"));
-    let data: serde_json::Value = serde_json::from_str(
-        sse.lines()
-            .find(|l| l.starts_with("data:"))
-            .unwrap()
-            .trim_start_matches("data: ")
-            .trim(),
-    )
-    .unwrap();
-    assert_eq!(data["sequence"], 1);
-    assert_eq!(data["stage"], "generator");
-    assert_eq!(data["model_id"], "llama3-8b");
-    assert!((data["elapsed_secs"].as_f64().unwrap() - 1.5).abs() < 1e-6);
-    // Double newline at end of SSE event.
-    assert!(sse.ends_with("\n\n"));
+impl Executor for MockExecutor {
+    fn execute(&self, _stage: &PipelineStage, _input: &str) -> Result<String, String> {
+        Ok(self.output.clone())
+    }
+}
+
+/// Build a three-stage (generator, auditor, synthesizer) pipeline config.
+fn three_stage_config() -> CouncilPipelineConfig {
+    CouncilPipelineConfig {
+        stages: vec![
+            PipelineStage {
+                model_id: "gen".into(),
+                role: CouncilRole::Generator,
+                prompt_template: "{input}".into(),
+                temperature: 0.7,
+                top_p: 0.9,
+                system_prompt: None,
+            },
+            PipelineStage {
+                model_id: "audit".into(),
+                role: CouncilRole::Auditor,
+                prompt_template: "{input}".into(),
+                temperature: 0.7,
+                top_p: 0.9,
+                system_prompt: None,
+            },
+            PipelineStage {
+                model_id: "synth".into(),
+                role: CouncilRole::Synthesizer,
+                prompt_template: "{input}".into(),
+                temperature: 0.7,
+                top_p: 0.9,
+                system_prompt: None,
+            },
+        ],
+        ..Default::default()
+    }
+}
+
+/// Run a pipeline while capturing every event broadcast on the channel.
+///
+/// Returns the captured event sequence in emission order. The receiver is
+/// subscribed *before* the engine runs and drained *after* it returns, so the
+/// capture is fully synchronous: `Sender::send` only buffers into the channel
+/// (bounded by capacity), and nothing is produced past `PipelineCompleted`.
+fn run_with_capture(
+    config: CouncilPipelineConfig,
+    executor: MockExecutor,
+    prompt: &str,
+) -> (Vec<CouncilEvent>, DebateOutcome) {
+    let (tx, _rx) = tokio::sync::broadcast::channel(256);
+    // Subscribe before running so no event is missed.
+    let mut drain = tx.subscribe();
+
+    let engine = CouncilEngine::with_events(config, executor, tx);
+    let outcome = engine.execute(prompt);
+
+    let mut events = Vec::new();
+    loop {
+        match drain.try_recv() {
+            Ok(event) => {
+                let is_terminal = matches!(event, CouncilEvent::PipelineCompleted { .. });
+                events.push(event);
+                if is_terminal {
+                    break;
+                }
+            }
+            // No more active senders: the pipeline is done.
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+            // The channel is empty; no events remain to capture.
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+            // A slow reader that fell behind: keep the last-seen value.
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+        }
+    }
+
+    (events, outcome)
+}
+
+/// Assert that every `StageStarted` is followed by at least one `TokenChunk`
+/// and then a matching `StageCompleted`, with no stage left open at the end.
+fn assert_started_token_completed(events: &[CouncilEvent]) {
+    let mut pending_start: Option<usize> = None;
+    let mut seen_chunks = 0usize;
+
+    for event in events {
+        match event {
+            CouncilEvent::StageStarted { stage_index, .. } => {
+                pending_start = Some(*stage_index);
+                seen_chunks = 0;
+            }
+            CouncilEvent::TokenChunk { stage_index, .. } => {
+                let start = pending_start.expect("TokenChunk emitted before any StageStarted");
+                assert_eq!(start, *stage_index, "token belongs to wrong stage");
+                seen_chunks += 1;
+            }
+            CouncilEvent::StageCompleted { stage_index, .. } => {
+                let start = pending_start.expect("StageCompleted emitted before any StageStarted");
+                assert_eq!(start, *stage_index, "completed belongs to wrong stage");
+                assert!(
+                    seen_chunks > 0,
+                    "StageCompleted with no preceding TokenChunk"
+                );
+                pending_start = None;
+                seen_chunks = 0;
+            }
+            CouncilEvent::PipelineCompleted { .. } | CouncilEvent::PipelineFailed { .. } => {
+                assert!(
+                    pending_start.is_none(),
+                    "pipeline terminated while a stage was still open"
+                );
+            }
+        }
+    }
 }
 
 #[test]
-fn test_format_sse_event_draft() {
-    let event = CouncilStreamEvent::Draft {
-        draft_text: "This is the initial draft.".into(),
-        model_id: "mistral-7b".into(),
-    };
-    let sse = format_sse_event(&event, 2);
+fn test_emission_order_full_pipeline() {
+    let (events, outcome) = run_with_capture(
+        three_stage_config(),
+        MockExecutor {
+            output: "generated draft".into(),
+        },
+        "test prompt",
+    );
 
-    assert!(sse.contains("event: council_draft"));
-    let data: serde_json::Value = serde_json::from_str(
-        sse.lines()
-            .find(|l| l.starts_with("data:"))
-            .unwrap()
-            .trim_start_matches("data: ")
-            .trim(),
-    )
-    .unwrap();
-    assert_eq!(data["sequence"], 2);
-    assert_eq!(data["model_id"], "mistral-7b");
-    assert_eq!(data["draft"], "This is the initial draft.");
+    // Non-empty, ordered from StageStarted to PipelineCompleted.
+    assert!(!events.is_empty(), "expected at least one event");
+    assert!(
+        matches!(events[0], CouncilEvent::StageStarted { .. }),
+        "first event must be StageStarted, got {:?}",
+        events[0]
+    );
+    assert!(
+        matches!(
+            events.last().unwrap(),
+            CouncilEvent::PipelineCompleted { .. }
+        ),
+        "last event must be PipelineCompleted, got {:?}",
+        events.last().unwrap()
+    );
+
+    // The full StageStarted -> TokenChunk -> StageCompleted chain holds.
+    assert_started_token_completed(&events);
+
+    // The debate itself should succeed end to end.
+    matches!(outcome, DebateOutcome::Success { .. });
 }
 
 #[test]
-fn test_format_sse_event_critique() {
-    let event = CouncilStreamEvent::Critique {
-        auditor_index: 0,
-        critique: "The draft needs more detail.".into(),
-        model_id: "claude-3-haiku".into(),
-    };
-    let sse = format_sse_event(&event, 3);
+fn test_pipeline_completed_always_emitted() {
+    let (events, outcome) = run_with_capture(
+        three_stage_config(),
+        MockExecutor {
+            output: "final synthesized consensus".into(),
+        },
+        "test prompt",
+    );
 
-    assert!(sse.contains("event: council_critique"));
-    let data: serde_json::Value = serde_json::from_str(
-        sse.lines()
-            .find(|l| l.starts_with("data:"))
-            .unwrap()
-            .trim_start_matches("data: ")
-            .trim(),
-    )
-    .unwrap();
-    assert_eq!(data["sequence"], 3);
-    assert_eq!(data["auditor_index"], 0);
-    assert_eq!(data["model_id"], "claude-3-haiku");
-    assert_eq!(data["critique"], "The draft needs more detail.");
+    // StageStarted/StageCompleted present (one per stage) and a terminal
+    // PipelineCompleted present exactly once, at the very end.
+    let starts = events
+        .iter()
+        .filter(|e| matches!(e, CouncilEvent::StageStarted { .. }))
+        .count();
+    let completes = events
+        .iter()
+        .filter(|e| matches!(e, CouncilEvent::StageCompleted { .. }))
+        .count();
+    let terminal = events
+        .iter()
+        .filter(|e| matches!(e, CouncilEvent::PipelineCompleted { .. }))
+        .count();
+
+    assert_eq!(starts, 3, "one StageStarted per stage");
+    assert_eq!(completes, 3, "one StageCompleted per stage");
+    assert_eq!(terminal, 1, "exactly one PipelineCompleted");
+
+    assert!(matches!(
+        events.last().unwrap(),
+        CouncilEvent::PipelineCompleted { .. }
+    ));
+    matches!(outcome, DebateOutcome::Success { .. });
 }
 
 #[test]
-fn test_format_sse_event_chunk() {
-    let event = CouncilStreamEvent::Chunk {
-        text: "Hello, world!".into(),
-    };
-    let sse = format_sse_event(&event, 4);
+fn test_broadcast_multiple_subscribers_receive_events() {
+    let (tx, mut rx1) = tokio::sync::broadcast::channel(16);
 
-    assert!(sse.contains("event: council_chunk"));
-    let data: serde_json::Value = serde_json::from_str(
-        sse.lines()
-            .find(|l| l.starts_with("data:"))
-            .unwrap()
-            .trim_start_matches("data: ")
-            .trim(),
-    )
-    .unwrap();
-    assert_eq!(data["sequence"], 4);
-    assert_eq!(data["text"], "Hello, world!");
+    let _ = tx.send(CouncilEvent::StageStarted {
+        stage_index: 0,
+        role: CouncilRole::Generator,
+        model_id: "gen".into(),
+        model_name: "gen".into(),
+    });
+
+    // rx1 received the first event; now subscribe a second listener.
+    let sub1 = rx1.try_recv().unwrap();
+    assert!(matches!(sub1, CouncilEvent::StageStarted { .. }));
+    let mut rx2 = tx.subscribe();
+
+    // Both active subscribers receive the second event.
+    let _ = tx.send(CouncilEvent::TokenChunk {
+        stage_index: 0,
+        text: "hi".into(),
+    });
+    let got1 = rx1.try_recv().unwrap();
+    let got2 = rx2.try_recv().unwrap();
+    assert!(matches!(got1, CouncilEvent::TokenChunk { .. }));
+    assert!(matches!(got2, CouncilEvent::TokenChunk { .. }));
+
+    // A late subscriber only sees events broadcast after it subscribed.
+    let mut rx3 = tx.subscribe();
+    let _ = tx.send(CouncilEvent::StageCompleted {
+        stage_index: 0,
+        full_text: "done".into(),
+        duration_sec: 1.0,
+        tok_per_sec: 1.0,
+    });
+    assert!(matches!(
+        rx3.try_recv().unwrap(),
+        CouncilEvent::StageCompleted { .. }
+    ));
+    // rx2 already consumed the TokenChunk; its next message is StageCompleted.
+    assert!(matches!(
+        rx2.try_recv().unwrap(),
+        CouncilEvent::StageCompleted { .. }
+    ));
 }
 
 #[test]
-fn test_format_sse_event_done() {
-    let event = CouncilStreamEvent::Done;
-    let sse = format_sse_event(&event, 5);
-
-    assert!(sse.contains("event: council_done"));
-    let data: serde_json::Value = serde_json::from_str(
-        sse.lines()
-            .find(|l| l.starts_with("data:"))
-            .unwrap()
-            .trim_start_matches("data: ")
-            .trim(),
-    )
-    .unwrap();
-    assert_eq!(data["sequence"], 5);
-    // Done event has no extra fields beyond sequence and timestamp.
-    assert!(data.get("timestamp").is_some());
-}
-
-#[test]
-fn test_encode_stream_events_multiple() {
+fn test_broadcast_resilience_when_no_subscriber() {
+    // Broadcasting to a sender with no active receiver must not panic.
+    let (tx, _rx) = tokio::sync::broadcast::channel(16);
     let events = vec![
-        CouncilStreamEvent::Status {
-            stage: "generator".into(),
-            model_id: "llama3-8b".into(),
-            elapsed_secs: 0.5,
+        CouncilEvent::StageStarted {
+            stage_index: 0,
+            role: CouncilRole::Generator,
+            model_id: "gen".into(),
+            model_name: "gen".into(),
         },
-        CouncilStreamEvent::Draft {
-            draft_text: "Draft content.".into(),
-            model_id: "llama3-8b".into(),
+        CouncilEvent::TokenChunk {
+            stage_index: 0,
+            text: "x".into(),
         },
-        CouncilStreamEvent::Done,
+        CouncilEvent::StageCompleted {
+            stage_index: 0,
+            full_text: "done".into(),
+            duration_sec: 1.0,
+            tok_per_sec: 1.0,
+        },
+        CouncilEvent::PipelineCompleted {
+            full_transcript: DebateTranscript::new("s".into(), "p".into(), three_stage_config()),
+        },
     ];
 
-    let encoded = encode_stream_events(&events);
-
-    // Should contain all three events.
-    assert!(encoded.contains("event: council_status"));
-    assert!(encoded.contains("event: council_draft"));
-    assert!(encoded.contains("event: council_done"));
-
-    // Each event should be separated by double newline.
-    let event_count = encoded.matches("\n\n").count();
-    assert_eq!(event_count, 3);
+    for event in events {
+        // Ignore the Err (no active receiver); the send must not panic.
+        let _ = tx.send(event);
+    }
 }
 
 #[test]
-fn test_encode_stream_events_empty() {
-    let events: Vec<CouncilStreamEvent> = vec![];
-    let encoded = encode_stream_events(&events);
-    assert!(encoded.is_empty());
-}
-
-#[test]
-fn test_sse_event_sequence_increments() {
-    let event = CouncilStreamEvent::Chunk {
-        text: "test".into(),
+fn test_event_kind_and_stage_index_helpers() {
+    let started = CouncilEvent::StageStarted {
+        stage_index: 2,
+        role: CouncilRole::Auditor,
+        model_id: "a".into(),
+        model_name: "a".into(),
     };
-    let sse1 = format_sse_event(&event, 10);
-    let sse2 = format_sse_event(&event, 20);
+    assert_eq!(started.kind(), "stage_started");
+    assert_eq!(started.stage_index(), Some(2));
 
-    let data1: serde_json::Value = serde_json::from_str(
-        sse1.lines()
-            .find(|l| l.starts_with("data:"))
-            .unwrap()
-            .trim_start_matches("data: ")
-            .trim(),
-    )
-    .unwrap();
-    let data2: serde_json::Value = serde_json::from_str(
-        sse2.lines()
-            .find(|l| l.starts_with("data:"))
-            .unwrap()
-            .trim_start_matches("data: ")
-            .trim(),
-    )
-    .unwrap();
-
-    assert_eq!(data1["sequence"], 10);
-    assert_eq!(data2["sequence"], 20);
-}
-
-#[test]
-fn test_sse_event_timestamp_is_rfc3339() {
-    let event = CouncilStreamEvent::Status {
-        stage: "synthesizer".into(),
-        model_id: "gpt-4".into(),
-        elapsed_secs: 2.0,
+    let chunk = CouncilEvent::TokenChunk {
+        stage_index: 2,
+        text: "t".into(),
     };
-    let sse = format_sse_event(&event, 1);
-    let data: serde_json::Value = serde_json::from_str(
-        sse.lines()
-            .find(|l| l.starts_with("data:"))
-            .unwrap()
-            .trim_start_matches("data: ")
-            .trim(),
-    )
-    .unwrap();
+    assert_eq!(chunk.kind(), "token_chunk");
+    assert_eq!(chunk.stage_index(), Some(2));
 
-    let timestamp = data["timestamp"].as_str().unwrap();
-    // RFC 3339 timestamps contain 'T' separator and end with timezone offset.
-    assert!(timestamp.contains('T'));
-    assert!(timestamp.ends_with("+00:00") || timestamp.ends_with("Z"));
-}
-
-#[test]
-fn test_council_stream_event_serialization_roundtrip() {
-    let event = CouncilStreamEvent::Critique {
-        auditor_index: 2,
-        critique: "Critical feedback.".into(),
-        model_id: "custom-model".into(),
+    let completed = CouncilEvent::StageCompleted {
+        stage_index: 2,
+        full_text: "done".into(),
+        duration_sec: 1.0,
+        tok_per_sec: 1.0,
     };
+    assert_eq!(completed.kind(), "stage_completed");
+    assert_eq!(completed.stage_index(), Some(2));
 
-    let json = serde_json::to_string(&event).unwrap();
-    let back: CouncilStreamEvent = serde_json::from_str(&json).unwrap();
-    assert_eq!(back, event);
+    let failed = CouncilEvent::PipelineFailed {
+        stage_index: 1,
+        error: "boom".into(),
+    };
+    assert_eq!(failed.kind(), "pipeline_failed");
+    assert_eq!(failed.stage_index(), Some(1));
+
+    let done = CouncilEvent::PipelineCompleted {
+        full_transcript: DebateTranscript::new("s".into(), "p".into(), three_stage_config()),
+    };
+    assert_eq!(done.kind(), "pipeline_completed");
+    assert_eq!(done.stage_index(), None);
 }

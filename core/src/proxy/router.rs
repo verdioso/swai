@@ -3,6 +3,7 @@ use tiny_http::{Header, Request, Response};
 use tracing::{debug, error};
 
 use super::anthropic::process_anthropic_payload;
+use super::council::EventProxyExecutor;
 pub use super::council::{
     build_council_sse_events, escape_sse_text, extract_model_from_body, is_council_model,
     parse_pipeline_header, ProxyExecutor,
@@ -12,9 +13,15 @@ use super::ollama::{
 };
 use super::openai::{handle_v1_models, normalize_codex_payload};
 use super::state::ProxyState;
-use super::streaming::{translate_openai_sse_to_responses, ResponsesStreamingBody, ResponsesSource};
+use super::streaming::{
+    translate_openai_sse_to_responses, ResponsesSource, ResponsesStreamingBody,
+};
 use crate::council::CouncilEngine;
 use reqwest::blocking::Client;
+
+/// Capacity of the broadcast channel used to fan live Council events out to
+/// UI subscribers. Large enough that a slow reader never blocks the debate.
+pub const BROADCAST_CAPACITY: usize = 256;
 
 /// Handle an incoming proxy request by inspecting state and forwarding.
 pub fn handle_proxy_request(mut req: Request, state: Arc<Mutex<ProxyState>>, client: Client) {
@@ -75,7 +82,10 @@ pub fn handle_proxy_request(mut req: Request, state: Arc<Mutex<ProxyState>>, cli
                     if let Ok(content) = std::fs::read_to_string(home_dir) {
                         if let Ok(parsed) = toml::from_str::<toml::Value>(&content) {
                             if let Some(council_val) = parsed.get("council") {
-                                if let Ok(config) = council_val.clone().try_into::<crate::council::CouncilPipelineConfig>() {
+                                if let Ok(config) = council_val
+                                    .clone()
+                                    .try_into::<crate::council::CouncilPipelineConfig>(
+                                ) {
                                     pipeline_config = config;
                                 }
                             }
@@ -101,16 +111,20 @@ pub fn handle_proxy_request(mut req: Request, state: Arc<Mutex<ProxyState>>, cli
 
             let prompt =
                 extract_prompt_from_body(&request_body).unwrap_or_else(|| "No prompt".into());
-            let executor = ProxyExecutor {
+            let inner = ProxyExecutor {
                 client: client.clone(),
                 primary_port,
                 state: state.clone(),
             };
-            let engine = CouncilEngine::new(pipeline_config, executor);
-            let (tx, rx) = std::sync::mpsc::channel();
-            
+            // Create a broadcast channel so any UI subscriber registered on the
+            // proxy state receives live Council events as the debate streams.
+            let (tx, rx) = tokio::sync::broadcast::channel(BROADCAST_CAPACITY);
+            let executor = EventProxyExecutor { inner };
+            let engine = CouncilEngine::with_events(pipeline_config, executor, tx);
+            let (sse_tx, sse_rx) = std::sync::mpsc::channel();
+
             // Send immediate start event to prevent timeout
-            let _ = tx.send(format!(
+            let _ = sse_tx.send(format!(
                 "event: message_start\ndata: {{\"type\": \"message_start\", \"message\": {{\"id\": \"msg_council\", \"type\": \"message\", \"role\": \"assistant\", \"content\": [], \"model\": \"{}\", \"stop_reason\": null, \"stop_sequence\": null, \"usage\": {{\"input_tokens\": 0, \"output_tokens\": 0}}}}}}\n\n",
                 model_id
             ).into_bytes());
@@ -122,6 +136,9 @@ pub fn handle_proxy_request(mut req: Request, state: Arc<Mutex<ProxyState>>, cli
                     current_stage: Some("1. Generating".to_string()),
                     ..Default::default()
                 });
+                // Expose the live Council event receiver to the application
+                // layer so the UI can subscribe and display real-time updates.
+                s.set_events_receiver(Some(Arc::new(Mutex::new(rx))));
             }
 
             std::thread::spawn(move || {
@@ -132,14 +149,14 @@ pub fn handle_proxy_request(mut req: Request, state: Arc<Mutex<ProxyState>>, cli
                 );
                 let sse_events = build_council_sse_events(&outcome, &model_id);
                 for event in sse_events {
-                    if tx.send(event).is_err() {
+                    if sse_tx.send(event).is_err() {
                         break;
                     }
                 }
             });
 
             let streaming_body = ResponsesStreamingBody {
-                source: ResponsesSource::Receiver { receiver: rx },
+                source: ResponsesSource::Receiver { receiver: sse_rx },
                 leftover: Vec::new(),
             };
             let response_headers = vec![
@@ -188,9 +205,7 @@ pub fn handle_proxy_request(mut req: Request, state: Arc<Mutex<ProxyState>>, cli
 
     let path_and_query = req.url().to_string();
     let path = path_and_query.split('?').next().unwrap_or(&path_and_query);
-    if req.method().as_str() == "GET"
-        && (path == "/v1/models" || path == "/models")
-    {
+    if req.method().as_str() == "GET" && (path == "/v1/models" || path == "/models") {
         handle_v1_models(req, &state);
         return;
     }
@@ -353,9 +368,9 @@ pub fn resolve_target_port(state: &ProxyState, body: &[u8]) -> Option<u16> {
     if !has_model_key {
         return None;
     }
-    
+
     let model_id = crate::proxy::council::extract_model_from_body(body)?;
-    
+
     for (id, &port) in &state.active_models {
         if id == &model_id {
             return Some(port);
@@ -395,7 +410,7 @@ pub fn error_response(status: u16, message: &str) -> Response<std::io::Cursor<Ve
 pub fn extract_prompt_from_body(body: &[u8]) -> Option<String> {
     let json_val = serde_json::from_slice::<serde_json::Value>(body).ok()?;
     let messages = json_val.get("messages").and_then(|m| m.as_array())?;
-    
+
     // Iterate backwards to find the LAST user message
     for msg in messages.iter().rev() {
         if let Some(role) = msg.get("role").and_then(|r| r.as_str()) {
