@@ -214,10 +214,7 @@ impl Reconciler {
             // Write updated config to disk.
             if let Ok(content) = toml::to_string_pretty(&self.config) {
                 if let Err(e) = std::fs::write(&config_path, &content) {
-                    warn!(
-                        "failed to write reconciled config: {}",
-                        e
-                    );
+                    warn!("failed to write reconciled config: {}", e);
                 } else {
                     info!(
                         "reconciled ctx_sizes for {} model(s) and wrote config",
@@ -322,4 +319,3 @@ impl PortCheck for PortState {
 
 #[cfg(test)]
 mod tests;
-

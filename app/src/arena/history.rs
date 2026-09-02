@@ -12,7 +12,11 @@ use swai_core::council::DebateTranscript;
 /// Base directory for debate transcript storage.
 fn debates_dir() -> Result<PathBuf, String> {
     let home = std::env::var("HOME").map_err(|e| format!("Cannot read HOME: {}", e))?;
-    let dir = PathBuf::from(home).join(".local").join("share").join("swai").join("debates");
+    let dir = PathBuf::from(home)
+        .join(".local")
+        .join("share")
+        .join("swai")
+        .join("debates");
     Ok(dir)
 }
 
@@ -47,8 +51,8 @@ pub fn load_transcript(id: &str) -> Result<DebateTranscript, String> {
     }
 
     let json = fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {}", e))?;
-    let transcript: DebateTranscript = serde_json::from_str(&json)
-        .map_err(|e| format!("JSON deserialization error: {}", e))?;
+    let transcript: DebateTranscript =
+        serde_json::from_str(&json).map_err(|e| format!("JSON deserialization error: {}", e))?;
 
     Ok(transcript)
 }
@@ -66,9 +70,7 @@ pub fn list_debates() -> Result<Vec<String>, String> {
             let entry = entry.ok()?;
             let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                path.file_stem()
-                    .and_then(|s| s.to_str())
-                    .map(String::from)
+                path.file_stem().and_then(|s| s.to_str()).map(String::from)
             } else {
                 None
             }
@@ -95,21 +97,19 @@ pub fn delete_transcript(id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use swai_core::council::{CouncilPipelineConfig, CouncilRole, PipelineStage, TurnResult};
     use std::time::Duration;
+    use swai_core::council::{CouncilPipelineConfig, CouncilRole, PipelineStage, TurnResult};
 
     fn make_test_transcript(id: &str) -> DebateTranscript {
         let config = CouncilPipelineConfig {
-            stages: vec![
-                PipelineStage {
-                    model_id: "test-model".into(),
-                    role: CouncilRole::Generator,
-                    prompt_template: String::new(),
-                    temperature: 0.7,
-                    top_p: 0.9,
-                    system_prompt: None,
-                },
-            ],
+            stages: vec![PipelineStage {
+                model_id: "test-model".into(),
+                role: CouncilRole::Generator,
+                prompt_template: String::new(),
+                temperature: 0.7,
+                top_p: 0.9,
+                system_prompt: None,
+            }],
             ..Default::default()
         };
 

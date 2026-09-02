@@ -238,8 +238,16 @@ pub fn handle_v1_models(req: Request, state: &Arc<Mutex<ProxyState>>) {
         }));
     }
 
-    let first_id = model_entries.first().and_then(|e| e.get("id")).cloned().unwrap_or(serde_json::json!(""));
-    let last_id = model_entries.last().and_then(|e| e.get("id")).cloned().unwrap_or(serde_json::json!(""));
+    let first_id = model_entries
+        .first()
+        .and_then(|e| e.get("id"))
+        .cloned()
+        .unwrap_or(serde_json::json!(""));
+    let last_id = model_entries
+        .last()
+        .and_then(|e| e.get("id"))
+        .cloned()
+        .unwrap_or(serde_json::json!(""));
 
     let response = serde_json::json!({
         "object": "list",

@@ -299,7 +299,10 @@ impl BottomDeck {
                 let display_name = if model_id == "council-pipeline" {
                     "⚖️ Council".to_string()
                 } else {
-                    names.get(model_id).cloned().unwrap_or_else(|| model_id.clone())
+                    names
+                        .get(model_id)
+                        .cloned()
+                        .unwrap_or_else(|| model_id.clone())
                 };
                 let is_active = active_id.as_deref() == Some(model_id.as_str());
 
@@ -362,9 +365,11 @@ impl BottomDeck {
                             .collect();
                         let d_str = stage_summaries.join(" · ");
                         self.prompt_label.set_markup(&p_str);
-                        self.decode_label.set_markup(&format!("<span alpha='85%'>{}</span>", d_str));
+                        self.decode_label
+                            .set_markup(&format!("<span alpha='85%'>{}</span>", d_str));
                     } else {
-                        self.prompt_label.set_text("Awaiting Council pipeline debate request...");
+                        self.prompt_label
+                            .set_text("Awaiting Council pipeline debate request...");
                         self.decode_label.set_text("");
                     }
                     return;
@@ -401,7 +406,10 @@ impl BottomDeck {
                             telem.decode_tokens, telem.decode_speed, total_dur
                         )
                     } else if telem.decode_speed > 0.0 {
-                        format!("⚡ Decode: <span foreground='#2dd4f0'>{:.1} tok/s</span>", telem.decode_speed)
+                        format!(
+                            "⚡ Decode: <span foreground='#2dd4f0'>{:.1} tok/s</span>",
+                            telem.decode_speed
+                        )
                     } else {
                         "".to_string()
                     };

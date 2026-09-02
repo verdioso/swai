@@ -55,8 +55,10 @@ impl Config {
 
     /// Save configuration to the resolved config.toml file on disk.
     pub fn save_to_disk(&self) -> Result<(), String> {
-        let path = Self::resolve_path().ok_or_else(|| "No config.toml path resolved".to_string())?;
-        let content = toml::to_string_pretty(self).map_err(|e| format!("Serialization error: {}", e))?;
+        let path =
+            Self::resolve_path().ok_or_else(|| "No config.toml path resolved".to_string())?;
+        let content =
+            toml::to_string_pretty(self).map_err(|e| format!("Serialization error: {}", e))?;
         std::fs::write(&path, content).map_err(|e| format!("File write error: {}", e))?;
         Ok(())
     }

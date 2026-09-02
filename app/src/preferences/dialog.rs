@@ -7,8 +7,8 @@ use adw::{EntryRow, SwitchRow};
 
 use swai_core::config::Config;
 
-use std::sync::{Arc, Mutex};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use super::checkpoint_tab::{build_checkpoint_tab, CheckpointWidgets};
 use super::council_tab::{build_council_tab, CouncilTabState};
@@ -161,7 +161,11 @@ impl PreferencesDialog {
             ("general", "General", "preferences-system-symbolic"),
             ("proxy", "Proxy", "network-server-symbolic"),
             ("checkpoint", "Checkpoint", "document-save-symbolic"),
-            ("notifications", "Notifications", "preferences-system-notifications-symbolic"),
+            (
+                "notifications",
+                "Notifications",
+                "preferences-system-notifications-symbolic",
+            ),
             ("council", "Council Pipeline", "system-users-symbolic"),
             ("guides", "Guides", "help-browser-symbolic"),
         ];
@@ -174,10 +178,7 @@ impl PreferencesDialog {
             row_box.set_margin_bottom(10);
 
             let icon = gtk::Image::from_icon_name(*icon_name);
-            let label = gtk::Label::builder()
-                .label(*title)
-                .xalign(0.0)
-                .build();
+            let label = gtk::Label::builder().label(*title).xalign(0.0).build();
 
             row_box.append(&icon);
             row_box.append(&label);
@@ -263,9 +264,7 @@ impl PreferencesDialog {
         action_bar.set_margin_bottom(12);
         action_bar.set_margin_top(6);
 
-        let cancel_btn = gtk::Button::builder()
-            .label("Cancel")
-            .build();
+        let cancel_btn = gtk::Button::builder().label("Cancel").build();
         let widget_cancel = widget.clone();
         cancel_btn.connect_clicked(move |_| {
             widget_cancel.response(ResponseType::Cancel);

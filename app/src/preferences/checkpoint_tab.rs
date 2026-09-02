@@ -129,7 +129,13 @@ fn add_compaction_threshold_controls(
 
     // Build a map of dropdown index -> ctx_size
     let active_ctx = active_model_id
-        .and_then(|id| config.models.iter().find(|m| m.id == id).map(|m| m.ctx_size))
+        .and_then(|id| {
+            config
+                .models
+                .iter()
+                .find(|m| m.id == id)
+                .map(|m| m.ctx_size)
+        })
         .unwrap_or_else(|| config.models.first().map(|m| m.ctx_size).unwrap_or(65_536));
 
     let mut model_ctxs: Vec<usize> = vec![active_ctx];

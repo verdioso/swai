@@ -193,9 +193,10 @@ fn extract_tarball(tarball_path: &std::path::Path, dest_dir: &std::path::Path) -
         .status()?;
 
     if !status.success() {
-        return Err(io::Error::other(
-            format!("tar extraction failed with status {}", status),
-        ));
+        return Err(io::Error::other(format!(
+            "tar extraction failed with status {}",
+            status
+        )));
     }
 
     Ok(())

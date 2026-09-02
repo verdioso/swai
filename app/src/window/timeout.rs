@@ -18,8 +18,8 @@ use crate::tray::{TrayAction, WindowAction};
 
 use super::card_wiring::wire_card_handlers;
 use super::footer::reorder_card_container;
-use super::watchdog::notify;
 use super::types::{ChannelMessage, ImportMessage, SlotUpdate};
+use super::watchdog::notify;
 
 pub struct TimeoutContext {
     pub cards: Rc<RefCell<Vec<ModelCard>>>,

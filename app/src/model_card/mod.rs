@@ -1,8 +1,8 @@
 //! SWAI — Model card widget subsystem.
 
+pub mod telemetry;
 #[cfg(test)]
 mod tests;
-pub mod telemetry;
 pub mod types;
 pub mod view;
 

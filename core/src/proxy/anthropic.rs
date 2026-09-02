@@ -58,15 +58,13 @@ pub fn process_anthropic_payload(
         .map(|s| s.compaction_threshold_pct)
         .unwrap_or(crate::compaction::DEFAULT_THRESHOLD_PCT);
 
-    let budget = crate::compaction::ContextBudget::from_ctx_size_and_threshold(ctx_size, threshold_pct);
+    let budget =
+        crate::compaction::ContextBudget::from_ctx_size_and_threshold(ctx_size, threshold_pct);
 
     // Check if checkpointing is enabled. When disabled, bypass loop detection
     // and checkpoint persistence entirely so the proxy acts as a transparent
     // router with zero interception overhead.
-    let checkpointing_enabled = state
-        .lock()
-        .map(|s| s.enable_checkpointing)
-        .unwrap_or(true);
+    let checkpointing_enabled = state.lock().map(|s| s.enable_checkpointing).unwrap_or(true);
 
     let loop_directive: Option<String> = if checkpointing_enabled {
         // --- Loop Detection (Phase A) ---

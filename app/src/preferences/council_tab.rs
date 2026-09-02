@@ -17,8 +17,8 @@ use gtk4 as gtk;
 use adw::prelude::*;
 use adw::{ActionRow, EntryRow, PreferencesGroup, PreferencesPage, SwitchRow};
 
-use swai_core::council::{CouncilMode, CouncilPipelineConfig, CouncilRole, PipelineStage};
 use swai_core::config::Config;
+use swai_core::council::{CouncilMode, CouncilPipelineConfig, CouncilRole, PipelineStage};
 
 /// Mutable state shared between UI widgets and the dialog's save path.
 #[derive(Clone)]

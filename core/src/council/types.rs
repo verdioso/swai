@@ -5,8 +5,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 /// Execution mode for a council pipeline.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum CouncilMode {
     /// Stages run sequentially, one after another.
     #[default]
@@ -16,7 +15,6 @@ pub enum CouncilMode {
     /// Choose between sequential and concurrent based on runtime conditions.
     Auto,
 }
-
 
 /// Role a council agent plays in a pipeline stage.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,8 +58,7 @@ fn default_top_p() -> f32 {
 }
 
 /// Fallback behavior when a stage fails.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum FallbackAction {
     /// Skip the failing stage and continue with the next.
     #[default]
@@ -72,10 +69,8 @@ pub enum FallbackAction {
     Abort,
 }
 
-
 /// Complete council pipeline configuration.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct CouncilPipelineConfig {
     /// Ordered list of stages to execute.
     pub stages: Vec<PipelineStage>,
@@ -89,7 +84,6 @@ pub struct CouncilPipelineConfig {
     #[serde(default)]
     pub role_overrides: HashMap<String, String>,
 }
-
 
 /// Result of a single council turn.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -172,7 +172,9 @@ pub fn add_clear_logs_button(parent: &PreferencesGroup) -> ActionRow {
                                 if let Ok(entries) = std::fs::read_dir(&log_dir) {
                                     for entry in entries.flatten() {
                                         let name = entry.file_name().to_string_lossy().to_string();
-                                        if name.starts_with(&format!("{}_", stem)) && name.ends_with(".log") {
+                                        if name.starts_with(&format!("{}_", stem))
+                                            && name.ends_with(".log")
+                                        {
                                             matching.push(entry.path());
                                         }
                                     }

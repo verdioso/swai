@@ -38,14 +38,22 @@ pub fn spawn_health_monitor(
     while let Ok(state) = health_rx.recv() {
         let is_ready = matches!(state, ModelState::Ready);
         let is_err = matches!(state, ModelState::Error(_));
-        
+
         let _ = sender.send(ChannelMessage::StateUpdate {
             model_id: model_id.clone(),
             state,
         });
-        
+
         if is_ready || is_err {
-            let result = if is_ready { Ok(()) } else { Err(swai_core::process_manager::error::ProcessError::HealthCheckFailed("Startup failed".into())) };
+            let result = if is_ready {
+                Ok(())
+            } else {
+                Err(
+                    swai_core::process_manager::error::ProcessError::HealthCheckFailed(
+                        "Startup failed".into(),
+                    ),
+                )
+            };
             let _ = sender.send(ChannelMessage::SwitchCompleted {
                 target_id: model_id.clone(),
                 result,

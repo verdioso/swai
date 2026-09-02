@@ -21,8 +21,7 @@ fn ctx_size_long_re() -> &'static regex::Regex {
 fn ctx_size_short_re() -> &'static regex::Regex {
     static RE: OnceLock<regex::Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        regex::Regex::new(r"(^|[ \t])-c[= \t]+(\d+)")
-            .expect("ctx_size_short regex must compile")
+        regex::Regex::new(r"(^|[ \t])-c[= \t]+(\d+)").expect("ctx_size_short regex must compile")
     })
 }
 
@@ -300,11 +299,7 @@ mod tests {
     fn test_sync_ctx_size_short_flag() {
         let tmp = tempfile::tempdir().unwrap();
         let script_path = tmp.path().join("test.sh");
-        std::fs::write(
-            &script_path,
-            "#!/bin/bash\nexec llama-server -c 65536\n",
-        )
-        .unwrap();
+        std::fs::write(&script_path, "#!/bin/bash\nexec llama-server -c 65536\n").unwrap();
 
         sync_ctx_size_in_script(&script_path, 262144).unwrap();
 

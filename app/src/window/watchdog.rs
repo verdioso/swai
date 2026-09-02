@@ -1,9 +1,9 @@
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
 use gio::prelude::*;
 use gio::Notification;
 use glib::object::Cast;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex};
 
 use crate::window::types::{ChannelMessage, SlotUpdate};
 use swai_core::process_manager::ProcessManager;

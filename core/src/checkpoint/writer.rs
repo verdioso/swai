@@ -96,9 +96,7 @@ impl CheckpointWriter {
         objective: Option<&str>,
     ) -> std::io::Result<()> {
         let _lock = self.state.lock().map_err(|e| {
-            std::io::Error::other(
-                format!("checkpoint writer lock poisoned: {}", e),
-            )
+            std::io::Error::other(format!("checkpoint writer lock poisoned: {}", e))
         })?;
 
         // Derive session_id from the file name (strip .md).

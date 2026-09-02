@@ -173,7 +173,10 @@ pub fn compact_messages_with_budget(
     // Helper: checks if a unit contains an edited file, critical plan file, or substantive discussion
     let is_critical_unit = |unit: &(usize, usize)| -> bool {
         for idx in unit.0..=unit.1 {
-            if is_edited_file_msg(&messages[idx]) || is_plan_file_msg(&messages[idx]) || is_substantive_discussion_msg(&messages[idx]) {
+            if is_edited_file_msg(&messages[idx])
+                || is_plan_file_msg(&messages[idx])
+                || is_substantive_discussion_msg(&messages[idx])
+            {
                 return true;
             }
         }

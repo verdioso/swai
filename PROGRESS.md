@@ -1733,6 +1733,41 @@ UI can listen and display live updates during Council debates.
     `tests_sse.rs` 217, `proxy/state.rs` 202, `proxy/council.rs` 295,
     `proxy/router.rs` 439
 
+## Phase 33.2 — GTK4 Live Debate Arena Stream Viewer
+
+### What was built
+
+Real-time token streaming and live stage card updates in the GTK4 Debate Arena (`app/src/arena/`).
+
+1. **`app/src/arena/types.rs` (234 lines) — Stream State Machine & Actions:**
+   - `StageStatus` enum (`Pending`, `Generating`, `Completed`, `Failed`).
+   - `StageState` struct tracking live text, duration, decode speed, and token metrics per stage.
+   - `ArenaStreamAction` enum for thread-safe UI updates (`StageStarted`, `AppendToken`, `StageCompleted`, `PipelineCompleted`, `PipelineFailed`).
+
+2. **`app/src/arena/stream.rs` (319 lines) — Live Stage Cards & Smart Auto-Scroll:**
+   - `StageCard` widget with header badges, model metadata, token counters, and live text view.
+   - Active pulse animation (`pulse-active` CSS class) on the currently generating stage.
+   - Real-time auto-scrolling via `text_view.scroll_to_iter(&end, false, 0.0, 1.0)` that locks during generation and releases when user scrolls manually.
+
+3. **`app/src/arena/window.rs` (377 lines) — GLib Main Loop Dispatch:**
+   - Background bridge thread drains `CouncilEvent`s from `ProxyState` and dispatches them via `glib::MainContext::default().invoke(...)` onto the GTK main loop.
+   - Live stage container transitions from historical debate mode to live streaming mode seamlessly.
+
+4. **`app/src/arena/stream_tests.rs` (226 lines) — Stream State Machine Tests:**
+   - 8 unit tests covering stage state lifecycle, token accumulation, duration/tok_per_sec metrics, multiple stages, and sticky auto-scroll state.
+
+### Test results
+- `cargo check --workspace`: 0 errors, 0 warnings
+- `cargo test -p swai -- --test-threads=1`: 51/51 passed
+- `SWAI_NO_SINGLE_INSTANCE=1 cargo test --workspace -- --test-threads=1`: 358/358 passed (0 failures)
+- All files strictly under 450 lines:
+  - `app/src/arena/stream.rs`: 319 lines
+  - `app/src/arena/stream_tests.rs`: 226 lines
+  - `app/src/arena/types.rs`: 234 lines
+  - `app/src/arena/window.rs`: 377 lines
+  - `app/src/arena/history.rs`: 176 lines
+
+
 
 
 

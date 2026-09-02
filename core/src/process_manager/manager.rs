@@ -74,7 +74,10 @@ impl ProcessManager {
         }
 
         if let Err(e) = self.config.save_to_disk() {
-            warn!("failed to save config to disk after removing model '{}': {}", id, e);
+            warn!(
+                "failed to save config to disk after removing model '{}': {}",
+                id, e
+            );
         }
 
         info!("removed model '{}' from config", id);
@@ -409,7 +412,13 @@ impl ProcessManager {
         self.start_model(id)?;
 
         // Extract the port from config for health monitoring
-        if let Some(port) = self.config.models.iter().find(|m| m.id == id).map(|m| m.port) {
+        if let Some(port) = self
+            .config
+            .models
+            .iter()
+            .find(|m| m.id == id)
+            .map(|m| m.port)
+        {
             let monitor = HealthMonitor::new(port, 30);
             std::thread::spawn(move || {
                 monitor.wait_until_ready_with_updates(tx);

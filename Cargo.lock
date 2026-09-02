@@ -2060,6 +2060,7 @@ dependencies = [
  "serde_json",
  "swai-core",
  "tempfile",
+ "tokio",
  "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
