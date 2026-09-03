@@ -48,13 +48,13 @@ pub struct ProxyState {
     pub last_council_telemetry: Option<CouncilTelemetryData>,
 
     /// Receiver for live Council pipeline events broadcast during a debate.
-    ///
-    /// When present, the proxy router forwards the active Council event
-    /// receiver to the application layer so the UI can subscribe and display
-    /// real-time stage transitions, token chunks, and execution metrics. The
-    /// receiver is `Arc<Mutex<...>>` so it can be shared across threads while
-    /// remaining behind the same lock as the rest of the proxy state.
     pub events_rx: Option<Arc<Mutex<tokio::sync::broadcast::Receiver<CouncilEvent>>>>,
+
+    /// Atomic flag to abort active model generation immediately when human chimes in.
+    pub abort_generation: Arc<std::sync::atomic::AtomicBool>,
+
+    /// Pending human guidance to inject into the next pipeline stage.
+    pub pending_human_guidance: Arc<Mutex<Option<String>>>,
 }
 
 /// Telemetry metrics for an individual stage in a council debate.
@@ -89,6 +89,8 @@ impl Default for ProxyState {
             compaction_threshold_pct: crate::compaction::DEFAULT_THRESHOLD_PCT,
             last_council_telemetry: None,
             events_rx: None,
+            abort_generation: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            pending_human_guidance: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -97,6 +99,31 @@ impl ProxyState {
     /// Create a new proxy state with no active model.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Request immediate abort of any running stage inference, optionally storing guidance.
+    pub fn abort_active_stage(&self, guidance: Option<String>) {
+        self.abort_generation.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(g) = guidance {
+            if let Ok(mut pending) = self.pending_human_guidance.lock() {
+                *pending = Some(g);
+            }
+        }
+    }
+
+    /// Reset abort flag for the next stage.
+    pub fn reset_abort(&self) {
+        self.abort_generation.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Check if active stage should abort.
+    pub fn is_abort_requested(&self) -> bool {
+        self.abort_generation.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Take pending human guidance if any.
+    pub fn take_human_guidance(&self) -> Option<String> {
+        self.pending_human_guidance.lock().ok().and_then(|mut g| g.take())
     }
 
     /// Set the primary target port and mark all models as loaded (Ready).

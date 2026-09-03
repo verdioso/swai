@@ -332,6 +332,72 @@ pub const CSS: &str = r#"
         margin: 0px;
         border: none;
     }
+
+    /* ── Gemini-style Debate Arena Flow ────────────────────────── */
+    .arena-stream-container {
+        padding: 20px 28px;
+    }
+    .arena-bubble-user {
+        background-color: alpha(@theme_fg_color, 0.08);
+        border: 1px solid alpha(#c084fc, 0.35);
+        border-radius: 20px;
+        padding: 16px 22px;
+        margin: 10px 0px 24px 60px;
+    }
+    .arena-bubble-ai {
+        background-color: alpha(@theme_fg_color, 0.04);
+        border: 1px solid alpha(@theme_fg_color, 0.08);
+        border-radius: 18px;
+        padding: 18px 22px;
+        margin: 10px 40px 20px 0px;
+    }
+    .arena-bubble-ai.generator {
+        border-left: 4px solid #38bdf8;
+    }
+    .arena-bubble-ai.auditor {
+        border-left: 4px solid #fbbf24;
+    }
+    .arena-bubble-ai.synthesizer {
+        border-left: 4px solid #34d399;
+    }
+    .arena-bubble-ai.human {
+        border-left: 4px solid #c084fc;
+    }
+    .arena-bubble-ai textview,
+    .arena-bubble-ai textview text,
+    .arena-bubble-user textview,
+    .arena-bubble-user textview text {
+        background-color: transparent;
+        font-size: 14.5px;
+    }
+    .arena-code-block {
+        background-color: #121215;
+        color: #e4e4e7;
+        border: 1px solid #27272a;
+        border-radius: 14px;
+        padding: 16px 18px;
+        margin: 12px 0px;
+        font-family: monospace;
+        font-size: 13.5px;
+    }
+    .arena-bottom-bar {
+        background-color: alpha(@theme_fg_color, 0.05);
+        border: 1px solid alpha(@theme_fg_color, 0.12);
+        border-radius: 0px;
+        padding: 6px 14px;
+        margin: 8px 32px 16px 32px;
+    }
+    .arena-bottom-bar button {
+        border-radius: 0px;
+    }
+    .arena-bottom-entry {
+        background-color: transparent;
+        border: none;
+        border-radius: 0px;
+        box-shadow: none;
+        font-size: 14px;
+        padding: 8px 12px;
+    }
 "#;
 
 pub fn load_css() {

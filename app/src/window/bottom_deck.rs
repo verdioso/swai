@@ -224,7 +224,7 @@ impl BottomDeck {
             })
             .collect();
 
-        if council_data.is_processing || !council_data.stages.is_empty() {
+        if self.selected_model_id.borrow().is_none() {
             *self.selected_model_id.borrow_mut() = Some("council-pipeline".to_string());
         }
 

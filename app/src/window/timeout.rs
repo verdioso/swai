@@ -40,6 +40,7 @@ pub struct TimeoutContext {
     pub quit_receiver: Receiver<()>,
     pub import_receiver: Receiver<ImportMessage>,
     pub bottom_deck: super::bottom_deck::BottomDeck,
+    pub debate_arena: Option<super::arena_wiring::DebateArenaCache>,
 }
 
 pub fn attach_timeout_handler(ctx: TimeoutContext) {
@@ -61,6 +62,7 @@ pub fn attach_timeout_handler(ctx: TimeoutContext) {
     let quit_receiver = ctx.quit_receiver;
     let import_receiver = ctx.import_receiver;
     let bottom_deck = ctx.bottom_deck;
+    let debate_arena = ctx.debate_arena;
 
     let pm_for_import = Arc::clone(&pm_timeout);
     let proxy_state_for_import = Rc::new(proxy_state.clone());
@@ -81,19 +83,13 @@ pub fn attach_timeout_handler(ctx: TimeoutContext) {
                             match &result {
                                 Ok(()) => c.set_state(CardState::Ready),
                                 Err(e) => {
-                                    c.set_state(CardState::Error(format!(
-                                        "Failed to start: {}",
-                                        e
-                                    )));
+                                    c.set_state(CardState::Error(format!("Failed to start: {}", e)));
                                     if config.enable_notifications() {
-                                        notify(
-                                            "SWAI - Model Error",
-                                            "Failed to start model - process exited with error",
-                                        );
+                                        notify("SWAI - Model Error", "Failed to start model - process exited with error");
                                     }
                                 }
                             }
-                        } else {
+                        } else if !c.state().is_transitioning() {
                             let is_running = pm_timeout
                                 .lock()
                                 .ok()
@@ -103,26 +99,31 @@ pub fn attach_timeout_handler(ctx: TimeoutContext) {
                                 c.set_state(CardState::Stopped);
                             }
                         }
-                        c.enable_toggle();
                         c.enable_restart();
+                    }
+
+                    let max_c = pm_timeout.lock().map(|pm| pm.max_concurrent_models()).unwrap_or(1);
+                    let act_c = cards_borrow.iter().filter(|x| matches!(x.state(), CardState::Starting | CardState::Loading | CardState::Ready)).count();
+                    for c in cards_borrow.iter_mut() {
+                        if !c.state().is_transitioning() {
+                            if matches!(c.state(), CardState::Ready) || act_c < max_c {
+                                c.enable_toggle();
+                            } else {
+                                c.disable_toggle();
+                            }
+                        }
                     }
                     if let Some(ref handle) = *tray_handle_timeout.borrow() {
                         handle.update(|_| {});
                     }
                     reorder_card_container(&cards_borrow);
 
-                    if let Some(active_card) = cards_borrow.iter().find(|c| {
-                        matches!(
-                            c.state(),
-                            CardState::Ready | CardState::Starting | CardState::Loading
-                        )
-                    }) {
-                        footer_model_label
-                            .set_text(&format!("{} active", active_card.config().name));
+                    let active_name = cards_borrow.iter().find(|c| matches!(c.state(), CardState::Ready | CardState::Starting | CardState::Loading)).map(|c| c.config().name.clone());
+                    if let Some(name) = active_name {
+                        footer_model_label.set_text(&format!("{name} active"));
                         footer_model_label.set_css_classes(&["accent-label"]);
                     } else {
-                        footer_model_label
-                            .set_text(&format!("SWAI v{}", env!("CARGO_PKG_VERSION")));
+                        footer_model_label.set_text(&format!("SWAI v{}", env!("CARGO_PKG_VERSION")));
                         footer_model_label.set_css_classes(&["dim-label"]);
                     }
 
@@ -148,12 +149,20 @@ pub fn attach_timeout_handler(ctx: TimeoutContext) {
                         if c.config().id == running_id {
                             match &result {
                                 Ok(()) => c.set_state(CardState::Stopped),
-                                Err(e) => {
-                                    c.set_state(CardState::Error(format!("Failed to stop: {}", e)))
-                                }
+                                Err(e) => c.set_state(CardState::Error(format!("Failed to stop: {}", e))),
                             }
-                            c.enable_toggle();
                             c.enable_restart();
+                        }
+                    }
+                    let max_c = pm_timeout.lock().map(|pm| pm.max_concurrent_models()).unwrap_or(1);
+                    let act_c = cards_borrow.iter().filter(|x| matches!(x.state(), CardState::Starting | CardState::Loading | CardState::Ready)).count();
+                    for c in cards_borrow.iter_mut() {
+                        if !c.state().is_transitioning() {
+                            if matches!(c.state(), CardState::Ready) || act_c < max_c {
+                                c.enable_toggle();
+                            } else {
+                                c.disable_toggle();
+                            }
                         }
                     }
                     if let Some(ref handle) = *tray_handle_timeout.borrow() {
@@ -161,18 +170,12 @@ pub fn attach_timeout_handler(ctx: TimeoutContext) {
                     }
                     reorder_card_container(&cards_borrow);
 
-                    if let Some(active_card) = cards_borrow.iter().find(|c| {
-                        matches!(
-                            c.state(),
-                            CardState::Ready | CardState::Starting | CardState::Loading
-                        )
-                    }) {
-                        footer_model_label
-                            .set_text(&format!("{} active", active_card.config().name));
+                    let active_name = cards_borrow.iter().find(|c| matches!(c.state(), CardState::Ready | CardState::Starting | CardState::Loading)).map(|c| c.config().name.clone());
+                    if let Some(name) = active_name {
+                        footer_model_label.set_text(&format!("{name} active"));
                         footer_model_label.set_css_classes(&["accent-label"]);
                     } else {
-                        footer_model_label
-                            .set_text(&format!("SWAI v{}", env!("CARGO_PKG_VERSION")));
+                        footer_model_label.set_text(&format!("SWAI v{}", env!("CARGO_PKG_VERSION")));
                         footer_model_label.set_css_classes(&["dim-label"]);
                     }
                 }
@@ -275,6 +278,11 @@ pub fn attach_timeout_handler(ctx: TimeoutContext) {
                     bottom_deck.handle_council_telemetry(council_data, state_lock.enable_council);
                 } else {
                     bottom_deck.ensure_council_pill(state_lock.enable_council);
+                }
+            }
+            if let Some(ref cache) = debate_arena {
+                if let Some(ref arena) = *cache.borrow() {
+                    super::arena_wiring::sync_active_debate(arena, Some(ps.clone()));
                 }
             }
         }

@@ -141,19 +141,29 @@ impl<E: Executor> CouncilEngine<E> {
             };
         }
 
+        let slug = crate::council::history::prompt_to_slug(input_prompt);
+        let session_id = format!(
+            "debate_{}_{}",
+            chrono::Local::now().format("%Y%m%d_%H%M%S"),
+            slug
+        );
         let mut state = DebateState::new(
-            format!("debate-{}", chrono::Utc::now().timestamp()),
+            session_id,
             input_prompt.to_string(),
             self.config.clone(),
         );
+        crate::council::history::save_intermediate(&state.transcript);
 
         // Stage 1: Generator (first stage with role Generator or first stage)
         self.run_generator(&mut state);
+        crate::council::history::save_intermediate(&state.transcript);
         if !state.aborted {
             // Stage 2: Auditor(s)
             self.run_auditors(&mut state);
+            crate::council::history::save_intermediate(&state.transcript);
             // Stage 3: Synthesizer
             self.run_synthesizer(&mut state);
+            crate::council::history::save_intermediate(&state.transcript);
         }
 
         let outcome = self.build_outcome(state);
@@ -165,6 +175,7 @@ impl<E: Executor> CouncilEngine<E> {
             | DebateOutcome::Aborted { transcript, .. } => Some(transcript.clone()),
         };
         if let Some(full_transcript) = transcript {
+            crate::council::history::save_intermediate(&full_transcript);
             self.emit(CouncilEvent::PipelineCompleted { full_transcript });
         }
 
@@ -237,7 +248,7 @@ impl<E: Executor> CouncilEngine<E> {
 
         let draft = state.draft.as_ref().unwrap().clone();
         let prompt = format!(
-            "Draft to audit:\n{draft}\n\nOriginal prompt:\n{}",
+            "Review and critique the following draft implementation for any bugs, missing requirements, or improvements. (Note: The Generator produces the implementation; file creation on disk is handled automatically by the system. Critique the technical implementation, correctness, and code completeness):\n\nOriginal prompt:\n{}\n\nDraft to audit:\n{draft}\n\nProvide constructive technical critiques and suggested improvements:",
             state.transcript.input_prompt
         );
 
@@ -276,6 +287,15 @@ impl<E: Executor> CouncilEngine<E> {
                         duration: dur,
                         error: None,
                     });
+
+                    human_feedback::handle_human_audit_feedback(
+                        &self.executor,
+                        stage,
+                        *stage_index,
+                        &draft,
+                        state,
+                        &|e| self.emit(e),
+                    );
                 }
                 Err(err) => {
                     self.emit(CouncilEvent::PipelineFailed {
@@ -314,12 +334,23 @@ impl<E: Executor> CouncilEngine<E> {
         // user has "Chimed In". Block until they resume (optionally with
         // feedback). Any injected guidance becomes an authoritative turn in
         // the transcript and is prepended to the prompt.
-        let human_feedback = self.await_human_gate();
-        if human_feedback.is_some() {
-            self.emit(CouncilEvent::HumanIntervention {
-                stage_index,
-                feedback: human_feedback.clone().unwrap_or_default(),
-            });
+        let human_feedback = self.await_human_gate().or_else(|| self.executor.take_human_feedback());
+        if let Some(ref fb) = human_feedback {
+            let trimmed = fb.trim().trim_end_matches(['.', '!', '?']).to_lowercase();
+            if matches!(trimmed.as_str(), "stop" | "cancel" | "abort" | "halt" | "exit" | "quit" | "please stop") {
+                state.aborted = true;
+                self.emit(CouncilEvent::HumanIntervention { stage_index, feedback: fb.clone() });
+                state.transcript.append_turn(TurnResult {
+                    turn_index: state.transcript.turns.len(),
+                    role: CouncilRole::Custom("Human Intervention".into()),
+                    model_id: "human".into(),
+                    output: "⏹ Debate stopped by human operator.".into(),
+                    duration: std::time::Duration::ZERO,
+                    error: None,
+                });
+                return;
+            }
+            self.emit(CouncilEvent::HumanIntervention { stage_index, feedback: fb.clone() });
         }
 
         let prompt = human_feedback::build_synthesizer_prompt(
@@ -398,31 +429,13 @@ impl<E: Executor> CouncilEngine<E> {
 
     fn build_outcome(&self, state: DebateState) -> DebateOutcome {
         if state.aborted {
-            return DebateOutcome::Aborted {
-                reason: "pipeline aborted due to stage failure".into(),
-                transcript: state.transcript,
-            };
+            return DebateOutcome::Aborted { reason: "pipeline aborted due to stage failure".into(), transcript: state.transcript };
         }
-
         match state.draft {
-            Some(final_response) if !state.warnings.is_empty() => DebateOutcome::Partial {
-                fallback_response: final_response,
-                warnings: state.warnings,
-                transcript: state.transcript,
-            },
-            Some(final_response) => DebateOutcome::Success {
-                final_response,
-                transcript: state.transcript,
-            },
-            None if !state.warnings.is_empty() => DebateOutcome::Partial {
-                fallback_response: String::new(),
-                warnings: state.warnings,
-                transcript: state.transcript,
-            },
-            _ => DebateOutcome::Aborted {
-                reason: "no response produced".into(),
-                transcript: state.transcript,
-            },
+            Some(resp) if !state.warnings.is_empty() => DebateOutcome::Partial { fallback_response: resp, warnings: state.warnings, transcript: state.transcript },
+            Some(final_response) => DebateOutcome::Success { final_response, transcript: state.transcript },
+            None if !state.warnings.is_empty() => DebateOutcome::Partial { fallback_response: String::new(), warnings: state.warnings, transcript: state.transcript },
+            _ => DebateOutcome::Aborted { reason: "no response produced".into(), transcript: state.transcript },
         }
     }
 }

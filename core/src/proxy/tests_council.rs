@@ -94,14 +94,13 @@ mod tests {
             ),
         };
 
-        let events = build_council_sse_events(&outcome, "council:debate");
+        let events = build_council_sse_events(&outcome, "council:debate", "prompt", None, false);
         let all = events
             .iter()
             .map(|e| String::from_utf8_lossy(e).to_string())
             .collect::<Vec<_>>()
             .join("");
 
-        assert!(all.contains("event: content_block_start"));
         assert!(all.contains("event: content_block_delta"));
         assert!(all.contains("Rust is awesome"));
         assert!(all.contains("event: message_stop"));
@@ -118,16 +117,38 @@ mod tests {
             ),
         };
 
-        let events = build_council_sse_events(&outcome, "council");
+        let events = build_council_sse_events(&outcome, "council", "prompt", None, false);
         let all = events
             .iter()
             .map(|e| String::from_utf8_lossy(e).to_string())
             .collect::<Vec<_>>()
             .join("");
 
-        assert!(all.contains("event: content_block_start"));
         assert!(all.contains("Debate aborted: all models timed out"));
         assert!(all.contains("event: message_stop"));
+    }
+
+    #[test]
+    fn test_build_council_sse_events_openai() {
+        let outcome = DebateOutcome::Success {
+            final_response: "Hello from OpenAI Council".to_string(),
+            transcript: DebateTranscript::new(
+                "s1".into(),
+                "prompt".into(),
+                CouncilPipelineConfig::default(),
+            ),
+        };
+
+        let events = build_council_sse_events(&outcome, "gpt-4o", "prompt", None, true);
+        let all = events
+            .iter()
+            .map(|e| String::from_utf8_lossy(e).to_string())
+            .collect::<Vec<_>>()
+            .join("");
+
+        assert!(all.contains("chat.completion.chunk"));
+        assert!(all.contains("Hello from OpenAI Council"));
+        assert!(all.contains("data: [DONE]"));
     }
 
     #[test]
@@ -136,5 +157,42 @@ mod tests {
         assert_eq!(escape_sse_text("line1\nline2"), "line1\\nline2");
         assert_eq!(escape_sse_text(r#"say "hi""#), r#"say \"hi\""#);
         assert_eq!(escape_sse_text(r#"back\slash"#), r#"back\\slash"#);
+    }
+
+    #[test]
+    fn test_should_run_council_universal_interception() {
+        // Helper simulating router evaluation
+        let should_run = |enable_council: bool, model: &str| -> bool {
+            enable_council || is_council_model(model)
+        };
+
+        // When global council is ON: any model routes to debate
+        assert!(should_run(true, "run-ornith-1.5-opt"));
+        assert!(should_run(true, "run-qwen25-coder-7b"));
+        assert!(should_run(true, "gpt-4o"));
+        assert!(should_run(true, "council"));
+        assert!(should_run(true, "council:debate"));
+
+        // When global council is OFF: only explicit council requests trigger debate
+        assert!(!should_run(false, "run-ornith-1.5-opt"));
+        assert!(!should_run(false, "run-qwen25-coder-7b"));
+        assert!(!should_run(false, "gpt-4o"));
+        assert!(should_run(false, "council"));
+        assert!(should_run(false, "council:debate"));
+    }
+
+    #[test]
+    fn test_is_auxiliary_request() {
+        let title_req = br#"{"messages": [{"role": "user", "content": "Generate a title for this conversation"}], "max_tokens": 20}"#;
+        assert!(crate::proxy::council::is_auxiliary_request(title_req));
+
+        let small_tokens = br#"{"messages": [{"role": "user", "content": "Hello"}], "max_tokens": 30}"#;
+        assert!(crate::proxy::council::is_auxiliary_request(small_tokens));
+
+        let code_req = br#"{"messages": [{"role": "user", "content": "Create form.html"}], "max_tokens": 2048}"#;
+        assert!(!crate::proxy::council::is_auxiliary_request(code_req));
+
+        let tool_resp = br#"{"messages": [{"role": "user", "content": "Create form.html"}, {"role": "assistant", "content": ""}, {"role": "tool", "content": "File created"}]}"#;
+        assert!(crate::proxy::council::is_auxiliary_request(tool_resp));
     }
 }

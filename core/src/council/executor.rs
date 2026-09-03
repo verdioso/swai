@@ -18,6 +18,11 @@ pub const STREAM_CHUNK_BUDGET: usize = 16;
 pub trait Executor: Send + Sync {
     fn execute(&self, stage: &PipelineStage, input: &str) -> Result<String, String>;
 
+    /// Check and consume pending human guidance injected during live debate.
+    fn take_human_feedback(&self) -> Option<String> {
+        None
+    }
+
     /// Stream a stage's output, emitting one `CouncilEvent::TokenChunk` per
     /// delta as it is produced. The default implementation runs the
     /// non-streaming `execute` and splits its output into word-sized chunks,

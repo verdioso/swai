@@ -13,7 +13,7 @@ use swai_core::proxy::ProxyState;
 use super::health::spawn_health_monitor;
 use super::types::ChannelMessage;
 use crate::logs_panel::LogViewerWindow;
-use crate::model_card::ModelCard;
+use crate::model_card::{CardState, ModelCard};
 
 pub fn wire_card_handlers(
     card: &mut ModelCard,
@@ -21,16 +21,17 @@ pub fn wire_card_handlers(
     process_manager: &Arc<Mutex<ProcessManager>>,
     proxy_state: &Rc<Option<Arc<Mutex<ProxyState>>>>,
     sender: &Sender<ChannelMessage>,
-    keep_alive_ref: &Rc<RefCell<Option<Arc<AtomicBool>>>>,
+    _keep_alive_ref: &Rc<RefCell<Option<Arc<AtomicBool>>>>,
     log_viewer: &Rc<RefCell<Option<LogViewerWindow>>>,
     config: &Config,
 ) {
     let model_id_toggle = card.config().id.clone();
     let model_id_restart = card.config().id.clone();
+    let card_ka = Arc::new(AtomicBool::new(false));
 
     // ── Toggle handler ───────────────────────────────────
     {
-        let ka_ref = Rc::clone(keep_alive_ref);
+        let card_ka_toggle = Arc::clone(&card_ka);
         let cards_inner = Rc::clone(cards);
         let sender_inner = sender.clone();
         let pm_ref = Arc::clone(process_manager);
@@ -49,24 +50,26 @@ pub fn wire_card_handlers(
                 if target_card.state().is_transitioning() {
                     return;
                 }
-                for c in cards_inner.iter() {
-                    if !c.state().is_transitioning() {
-                        c.disable_toggle();
-                    }
-                }
                 target_card.set_starting();
 
-                if let Some(ref old_ka) = *ka_ref.borrow() {
-                    old_ka.store(false, Ordering::SeqCst);
+                let max_concurrent = pm_ref.lock().map(|pm| pm.max_concurrent_models()).unwrap_or(1);
+                let active_count = cards_inner.iter().filter(|c| {
+                    matches!(c.state(), CardState::Starting | CardState::Loading | CardState::Ready)
+                }).count();
+
+                if active_count >= max_concurrent {
+                    for c in cards_inner.iter() {
+                        if matches!(c.state(), CardState::Stopped | CardState::Error(_)) {
+                            c.disable_toggle();
+                        }
+                    }
                 }
 
-                let new_ka = Arc::new(AtomicBool::new(true));
-                *ka_ref.borrow_mut() = Some(Arc::clone(&new_ka));
-
+                card_ka_toggle.store(true, Ordering::SeqCst);
                 let bg_model_id = model_id.clone();
                 let pm_thread = Arc::clone(&pm_ref);
                 let sender_thread = sender_inner.clone();
-                let ka_thread = Arc::clone(&new_ka);
+                let ka_thread = Arc::clone(&card_ka_toggle);
                 let sender_health_for_thread = sender_health_for_toggle.clone();
 
                 std::thread::spawn(move || {
@@ -131,10 +134,7 @@ pub fn wire_card_handlers(
                     }
                 });
             } else {
-                if let Some(ref old_ka) = *ka_ref.borrow() {
-                    old_ka.store(false, Ordering::SeqCst);
-                }
-                *ka_ref.borrow_mut() = None;
+                card_ka_toggle.store(false, Ordering::SeqCst);
 
                 let pm_thread = Arc::clone(&pm_ref);
                 let sender_thread = sender_inner.clone();
@@ -172,11 +172,11 @@ pub fn wire_card_handlers(
 
     // ── Restart button handler ───────────────────────────
     {
+        let card_ka_restart = Arc::clone(&card_ka);
         let cards_restart = Rc::clone(cards);
         let sender_restart = sender.clone();
         let pm_restart = Arc::clone(process_manager);
         let proxy_for_restart = Rc::clone(proxy_state);
-        let ka_ref_restart = Rc::clone(keep_alive_ref);
         let model_id = model_id_restart;
 
         card.restart_button.connect_clicked(move |_| {
@@ -193,17 +193,11 @@ pub fn wire_card_handlers(
 
             target.disable_restart();
 
-            if let Some(ref old_ka) = *ka_ref_restart.borrow() {
-                old_ka.store(false, Ordering::SeqCst);
-            }
-
-            let new_ka = Arc::new(AtomicBool::new(true));
-            *ka_ref_restart.borrow_mut() = Some(Arc::clone(&new_ka));
-
+            card_ka_restart.store(true, Ordering::SeqCst);
             let bg_model_id = model_id.clone();
             let pm_thread = Arc::clone(&pm_restart);
             let sender_thread = sender_restart.clone();
-            let ka_thread = new_ka;
+            let ka_thread = Arc::clone(&card_ka_restart);
             let proxy_restart_thread = proxy_thread.as_ref().map(Arc::clone);
 
             std::thread::spawn(move || {

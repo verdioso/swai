@@ -41,6 +41,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use gtk4 as gtk;
+use gtk::prelude::*;
 
 use swai_core::proxy::ProxyState;
 
@@ -59,8 +61,7 @@ pub fn open_debate_arena(cache: &DebateArenaCache, proxy_state: Option<Arc<Mutex
     let mut guard = cache.borrow_mut();
 
     if let Some(existing) = guard.as_ref() {
-        // Window already exists: just raise/restore it. Re-subscribe in case a
-        // new debate started since the last time we opened the window.
+        existing.set_proxy_state(proxy_state.clone());
         existing.present();
         subscribe_to_debate(existing, proxy_state.clone());
         return;
@@ -68,6 +69,7 @@ pub fn open_debate_arena(cache: &DebateArenaCache, proxy_state: Option<Arc<Mutex
 
     // Construct a fresh window on the GTK main thread.
     let arena = ArenaWindow::new();
+    arena.set_proxy_state(proxy_state.clone());
     arena.present();
     subscribe_to_debate(&arena, proxy_state);
 
@@ -81,7 +83,7 @@ pub fn open_debate_arena(cache: &DebateArenaCache, proxy_state: Option<Arc<Mutex
 /// which spawns the background→main-thread bridge. If `None`, the window is
 /// simply left showing its empty-state placeholder so the user can browse
 /// saved debates.
-fn subscribe_to_debate(arena: &ArenaWindow, proxy_state: Option<Arc<Mutex<ProxyState>>>) {
+pub fn subscribe_to_debate(arena: &ArenaWindow, proxy_state: Option<Arc<Mutex<ProxyState>>>) {
     let rx = match proxy_state {
         Some(ref ps) => {
             // Lock only long enough to read the `Option`, then drop the lock
@@ -96,4 +98,37 @@ fn subscribe_to_debate(arena: &ArenaWindow, proxy_state: Option<Arc<Mutex<ProxyS
     if let Some(events_rx) = rx {
         arena.observe_debate(events_rx);
     }
+}
+
+/// Automatically sync active debate broadcast if the Arena window is open/visible.
+pub fn sync_active_debate(arena: &ArenaWindow, proxy_state: Option<Arc<Mutex<ProxyState>>>) {
+    if arena.is_visible() {
+        subscribe_to_debate(arena, proxy_state);
+    }
+}
+
+/// Intercept global shortcut keys in the capture phase to open Arena and prevent GTK Inspector.
+pub fn attach_arena_shortcut(
+    widget: &impl IsA<gtk::Widget>,
+    debate_arena: &DebateArenaCache,
+    proxy_state: Option<Arc<Mutex<ProxyState>>>,
+) {
+    let key_ctrl = gtk::EventControllerKey::new();
+    key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let da_key = debate_arena.clone();
+    let ps_key = proxy_state;
+    key_ctrl.connect_key_pressed(move |_ctrl, keyval, _code, state| {
+        if state.contains(gtk::gdk::ModifierType::CONTROL_MASK) {
+            let is_shift = state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+            let is_d = keyval == gtk::gdk::Key::d || keyval == gtk::gdk::Key::D;
+            let is_i = keyval == gtk::gdk::Key::i || keyval == gtk::gdk::Key::I;
+            let is_a = keyval == gtk::gdk::Key::a || keyval == gtk::gdk::Key::A;
+            if (is_shift && (is_d || is_i || is_a)) || is_d {
+                open_debate_arena(&da_key, ps_key.clone());
+                return glib::Propagation::Stop;
+            }
+        }
+        glib::Propagation::Proceed
+    });
+    widget.add_controller(key_ctrl);
 }

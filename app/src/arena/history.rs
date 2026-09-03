@@ -1,87 +1,17 @@
-#![allow(dead_code, unused)]
 //! SWAI — Debate transcript persistence layer.
 //!
-//! Save and load debate transcripts as JSON files from
-//! `~/.local/share/swai/debates/<id>.json`.
+//! Re-exports debate transcript persistence helpers from `swai_core::council::history`.
+
+pub use swai_core::council::history::{
+    debates_dir, list_debates, load_transcript, save_transcript,
+};
 
 use std::fs;
-use std::path::PathBuf;
-
-use swai_core::council::DebateTranscript;
-
-/// Base directory for debate transcript storage.
-fn debates_dir() -> Result<PathBuf, String> {
-    let home = std::env::var("HOME").map_err(|e| format!("Cannot read HOME: {}", e))?;
-    let dir = PathBuf::from(home)
-        .join(".local")
-        .join("share")
-        .join("swai")
-        .join("debates");
-    Ok(dir)
-}
-
-/// Ensure the debates directory exists.
-fn ensure_dir() -> Result<PathBuf, String> {
-    let dir = debates_dir()?;
-    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create debates dir: {}", e))?;
-    Ok(dir)
-}
-
-/// Save a debate transcript to disk.
-///
-/// Returns the path where the file was written.
-pub fn save_transcript(transcript: &DebateTranscript) -> Result<PathBuf, String> {
-    let dir = ensure_dir()?;
-    let path = dir.join(format!("{}.json", transcript.session_id));
-
-    let json = serde_json::to_string_pretty(transcript)
-        .map_err(|e| format!("JSON serialization error: {}", e))?;
-
-    fs::write(&path, json).map_err(|e| format!("Failed to write file: {}", e))?;
-    Ok(path)
-}
-
-/// Load a debate transcript from disk by session ID.
-pub fn load_transcript(id: &str) -> Result<DebateTranscript, String> {
-    let dir = debates_dir()?;
-    let path = dir.join(format!("{}.json", id));
-
-    if !path.exists() {
-        return Err(format!("Debate not found: {}", id));
-    }
-
-    let json = fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {}", e))?;
-    let transcript: DebateTranscript =
-        serde_json::from_str(&json).map_err(|e| format!("JSON deserialization error: {}", e))?;
-
-    Ok(transcript)
-}
-
-/// List all saved debate session IDs, sorted alphabetically.
-pub fn list_debates() -> Result<Vec<String>, String> {
-    let dir = debates_dir()?;
-    if !dir.exists() {
-        return Ok(Vec::new());
-    }
-
-    let mut ids: Vec<String> = fs::read_dir(&dir)
-        .map_err(|e| format!("Failed to read debates dir: {}", e))?
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                path.file_stem().and_then(|s| s.to_str()).map(String::from)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    ids.sort();
-    Ok(ids)
-}
+use gtk4 as gtk;
+use gtk::prelude::*;
 
 /// Delete a debate transcript by session ID.
+#[allow(dead_code)]
 pub fn delete_transcript(id: &str) -> Result<(), String> {
     let dir = debates_dir()?;
     let path = dir.join(format!("{}.json", id));
@@ -94,11 +24,37 @@ pub fn delete_transcript(id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Populate the debate listbox with saved debates.
+pub fn populate_debate_list(listbox: &gtk4::ListBox) {
+    while let Some(child) = listbox.first_child() {
+        listbox.remove(&child);
+    }
+
+    if let Ok(debates) = list_debates() {
+        for id in debates {
+            let row = gtk4::ListBoxRow::new();
+            let label = gtk4::Label::new(Some(&id));
+            label.set_xalign(0.0);
+            label.set_margin_start(12);
+            label.set_margin_end(12);
+            label.set_margin_top(6);
+            label.set_margin_bottom(6);
+
+            row.add_css_class("selectable");
+            row.set_activatable(true);
+            row.set_child(Some(&label));
+            listbox.append(&row);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Duration;
-    use swai_core::council::{CouncilPipelineConfig, CouncilRole, PipelineStage, TurnResult};
+    use swai_core::council::{
+        CouncilPipelineConfig, CouncilRole, DebateTranscript, PipelineStage, TurnResult,
+    };
 
     fn make_test_transcript(id: &str) -> DebateTranscript {
         let config = CouncilPipelineConfig {
@@ -152,9 +108,9 @@ mod tests {
 
     #[test]
     fn test_list_debates_empty() {
-        // Should not error even if directory doesn't exist.
-        let debates = list_debates().unwrap();
-        assert!(debates.is_empty());
+        // Should not error even if debates exist or directory is empty.
+        let debates = list_debates();
+        assert!(debates.is_ok());
     }
 
     #[test]

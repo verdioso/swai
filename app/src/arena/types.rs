@@ -136,6 +136,7 @@ pub fn event_to_action(event: &swai_core::council::CouncilEvent) -> Option<Arena
 ///
 /// Kept in this pure module (rather than the GTK-dependent `window.rs`) so both
 /// the bridge and the tests share one source of truth.
+#[allow(dead_code)]
 pub fn stage_index_of(action: &ArenaStreamAction) -> usize {
     match action {
         ArenaStreamAction::StageStarted { stage_index, .. }

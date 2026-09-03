@@ -1,38 +1,23 @@
 #![allow(dead_code, unused)]
-//! SWAI — ArenaWindow: GTK4/Libadwaita debate arena desktop window.
+//! SWAI — ArenaWindow: GTK4/Libadwaita Gemini-style debate arena window.
 //!
-//! Provides a sidebar for browsing saved debates, a live-stream panel for
-//! watching a council debate as it generates, and a transcript view for
-//! rendering finished debates.
-//!
-//! ## Live streaming bridge
-//!
-//! The background council pipeline broadcasts `CouncilEvent`s on a tokio
-//! `broadcast` channel. Those events live on a non-GTK thread, so they cannot
-//! touch GTK widgets directly. `window.rs` bridges them onto the GTK main loop
-//! without ever moving a GTK handle across a thread boundary:
-//!
-//! 1. A background thread drains the tokio receiver and translates each event
-//!    into a plain-data `ArenaStreamAction`.
-//! 2. Actions are forwarded over an `mpsc` channel (actions are `Send`; GTK
-//!    widgets never leave the main thread).
-//! 3. The main thread polls that channel from a `glib::timeout_add_local`
-//!    source, applying each action to the appropriate `StageBubbleCard`.
-//!
-//! Because the polling closure runs on the GTK main thread, GTK is only ever
-//! touched there, and the main loop never blocks on the debate.
+//! Provides a saved debates sidebar, a unified auto-scrolling chat stream,
+//! a persistent bottom Chime In bar, and rich color-coded role cards.
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use gtk::prelude::*;
 use gtk4 as gtk;
+use crate::arena::history::populate_debate_list;
 use swai_core::council::{CouncilEvent, DebateTranscript};
+use swai_core::proxy::ProxyState;
 
 use super::chime_in::ChimeIn;
 use super::history;
 use super::stream::StageBubbleCard;
-use super::types::{event_to_action, stage_index_of, ArenaStreamAction};
+use super::types::{event_to_action, ArenaStreamAction};
 use super::view;
 
 /// ArenaWindow: Libadwaita window with history sidebar, live stream panel, and
@@ -48,6 +33,8 @@ pub struct ArenaWindow {
     stage_cards: Rc<RefCell<Vec<Option<StageBubbleCard>>>>,
     /// The empty-state placeholder in the live panel.
     live_empty: gtk::Label,
+    /// Stack switcher between live stream and saved transcript view.
+    stack: gtk::Stack,
     /// Right panel containing the transcript view.
     transcript_view: gtk::ScrolledWindow,
     /// The "Chime In" human-in-the-loop control, shown in the header while a
@@ -55,18 +42,24 @@ pub struct ArenaWindow {
     chime_in: ChimeIn,
     /// Currently loaded transcript (if any).
     current_transcript: Rc<RefCell<Option<DebateTranscript>>>,
+    /// Pointer id of currently observed receiver to prevent duplicate bridges.
+    observed_rx: Rc<RefCell<Option<usize>>>,
+    /// Optional ProxyState handle for triggering instant model generation aborts.
+    proxy_state: Rc<RefCell<Option<Arc<Mutex<ProxyState>>>>>,
 }
 
 impl ArenaWindow {
     /// Create a new ArenaWindow.
     pub fn new() -> Self {
-        let (widget, debate_list, live_panel, live_empty, transcript_view, chime_in) =
-            build_window();
+        let proxy_state = Rc::new(RefCell::new(None));
+        let (widget, debate_list, live_panel, live_empty, stack, transcript_view, chime_in) =
+            build_window(&proxy_state);
 
         let stage_cards = Rc::new(RefCell::new(Vec::new()));
         let current_transcript = Rc::new(RefCell::new(None::<DebateTranscript>));
+        let observed_rx = Rc::new(RefCell::new(None));
 
-        wire_sidebar(&debate_list, &current_transcript);
+        wire_sidebar(&debate_list, &current_transcript, &stack, &transcript_view);
 
         Self {
             widget,
@@ -74,10 +67,18 @@ impl ArenaWindow {
             live_panel,
             stage_cards,
             live_empty,
+            stack,
             transcript_view,
             chime_in,
             current_transcript,
+            observed_rx,
+            proxy_state,
         }
+    }
+
+    /// Attach proxy state handle to enable immediate interruption on chime-in.
+    pub fn set_proxy_state(&self, proxy_state: Option<Arc<Mutex<ProxyState>>>) {
+        *self.proxy_state.borrow_mut() = proxy_state;
     }
 
     /// Present the window (make it visible and raise it).
@@ -85,41 +86,31 @@ impl ArenaWindow {
         self.widget.present();
     }
 
-    /// Start observing a live debate.
-    ///
-    /// `events_rx` is the tokio broadcast receiver for this debate's
-    /// `CouncilEvent`s (the same one the proxy registers on its state). This
-    /// spawns a background thread that drains the channel and forwards each
-    /// translated action onto the GTK main loop. The live panel replaces the
-    /// empty-state placeholder on the first action.
-    ///
-    /// ## Thread-safety model
-    ///
-    /// GTK widgets are not `Send`, so they must never cross a thread boundary.
-    /// The bridge therefore sends only plain-data `ArenaStreamAction`s over an
-    /// `mpsc` channel; the GTK widgets are owned by the main thread, which polls
-    /// the channel on a `timeout_add_local` source. This guarantees no GTK call
-    /// ever runs on the bridge thread and the main loop never blocks on the
-    /// debate.
+    /// Check if the window is currently visible.
+    pub fn is_visible(&self) -> bool {
+        self.widget.is_visible()
+    }
+
+    /// Start observing a live debate. Spawns a background bridge thread
+    /// draining the broadcast channel and forwarding plain actions onto GTK main loop.
     pub fn observe_debate(
         &self,
         events_rx: std::sync::Arc<std::sync::Mutex<tokio::sync::broadcast::Receiver<CouncilEvent>>>,
     ) {
-        // Take ownership of the receiver from the mutex. We own it for the
-        // lifetime of the bridge thread.
+        let rx_id = std::sync::Arc::as_ptr(&events_rx) as usize;
+        if *self.observed_rx.borrow() == Some(rx_id) {
+            return;
+        }
+        *self.observed_rx.borrow_mut() = Some(rx_id);
+
         let mut rx = match events_rx.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        // `resubscribe` returns a fresh receiver positioned at the latest value,
-        // so no early events are missed.
         let mut rx = rx.resubscribe();
 
-        // Data-only channel: actions are `Send` (plain data), so this is safe to
-        // cross threads. GTK widgets stay on the main thread.
         let (tx, rx_ui) = std::sync::mpsc::channel::<ArenaStreamAction>();
 
-        // Background thread: drain the tokio receiver, translate, forward.
         std::thread::spawn(move || {
             loop {
                 // `try_recv` is synchronous and non-blocking, which is exactly
@@ -159,12 +150,18 @@ impl ArenaWindow {
         let cards = Rc::clone(&self.stage_cards);
         let panel = self.live_panel.clone();
         let empty = self.live_empty.clone();
+        let stack = self.stack.clone();
+        let debate_list = self.debate_list.clone();
         let _ = glib::timeout_add_local(std::time::Duration::from_millis(20), move || {
             loop {
                 match rx_ui.try_recv() {
-                    Ok(action) => apply_action_to_panel(&panel, &cards, &empty, &action),
+                    Ok(action) => {
+                        stack.set_visible_child_name("live");
+                        apply_action_to_panel(&panel, &cards, &empty, &action);
+                    }
                     Err(std::sync::mpsc::TryRecvError::Empty) => break,
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        populate_debate_list(&debate_list);
                         return glib::ControlFlow::Break;
                     }
                 }
@@ -179,10 +176,10 @@ impl ArenaWindow {
 
         *self.current_transcript.borrow_mut() = Some(transcript.clone());
 
-        // Replace content with transcript view.
+        // Replace content with transcript view and show saved stack.
         self.transcript_view
             .set_child(Some(&view::create_transcript_view(&transcript)));
-        self.transcript_view.set_visible(true);
+        self.stack.set_visible_child_name("saved");
 
         Ok(())
     }
@@ -200,34 +197,35 @@ impl ArenaWindow {
     }
 }
 
-/// Apply a UI action to the live panel, creating cards lazily per stage index.
+/// Apply a UI action to the live panel, creating cards sequentially for a continuous chat flow.
 fn apply_action_to_panel(
     panel: &gtk::Box,
     cards: &Rc<RefCell<Vec<Option<StageBubbleCard>>>>,
     empty: &gtk::Label,
     action: &ArenaStreamAction,
 ) {
-    // Ensure the empty-state placeholder is removed on first real action.
-    if panel.first_child().is_some_and(|c| c.is::<gtk::Label>()) {
+    if empty.parent().is_some() {
         panel.remove(empty);
     }
 
-    let stage_index = stage_index_of(action);
     let mut cards_guard = cards.borrow_mut();
-    // Grow the vec to hold this stage index.
-    while cards_guard.len() <= stage_index {
-        cards_guard.push(None);
-    }
-
-    // Get or create the card for this stage.
-    let card = if let Some(existing) = &cards_guard[stage_index] {
-        existing.clone()
-    } else {
-        let new_card = StageBubbleCard::new();
-        panel.append(&new_card.widget());
-        let cloned = new_card.clone();
-        cards_guard[stage_index] = Some(new_card);
-        cloned
+    let card = match action {
+        ArenaStreamAction::StageStarted { .. } => {
+            let new_card = StageBubbleCard::new();
+            panel.append(&new_card.widget());
+            cards_guard.push(Some(new_card.clone()));
+            new_card
+        }
+        _ => {
+            if let Some(Some(last)) = cards_guard.last() {
+                last.clone()
+            } else {
+                let new_card = StageBubbleCard::new();
+                panel.append(&new_card.widget());
+                cards_guard.push(Some(new_card.clone()));
+                new_card
+            }
+        }
     };
     drop(cards_guard);
 
@@ -235,11 +233,14 @@ fn apply_action_to_panel(
 }
 
 /// Build the full window UI, returning all widgets the struct needs to hold.
-fn build_window() -> (
+fn build_window(
+    proxy_state: &Rc<RefCell<Option<Arc<Mutex<ProxyState>>>>>,
+) -> (
     gtk::ApplicationWindow,
     gtk::ListBox,
     gtk::Box,
     gtk::Label,
+    gtk::Stack,
     gtk::ScrolledWindow,
     ChimeIn,
 ) {
@@ -247,30 +248,32 @@ fn build_window() -> (
         .title("Arena — Debate")
         .default_width(1024)
         .default_height(720)
+        .hide_on_close(true)
         .build();
+
+    let key_ctrl = gtk::EventControllerKey::new();
+    key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
+    key_ctrl.connect_key_pressed(move |_, keyval, _, state| {
+        let mask = gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::SHIFT_MASK;
+        if state.contains(mask) && matches!(keyval, gtk::gdk::Key::d | gtk::gdk::Key::D | gtk::gdk::Key::i | gtk::gdk::Key::I) {
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
+    });
+    widget.add_controller(key_ctrl);
 
     let header = gtk::HeaderBar::new();
     header.set_show_title_buttons(true);
 
-    let new_btn = gtk::Button::builder().label("New Debate").build();
-    new_btn.add_css_class("suggested-action");
-    new_btn.set_margin_end(6);
-    let save_btn = gtk::Button::builder().label("Save Current").build();
-    save_btn.set_margin_end(6);
+    let new_btn = gtk::Button::builder().label("Live Stream").css_classes(["suggested-action"]).margin_end(6).build();
+    let save_btn = gtk::Button::builder().label("Save Current").margin_end(6).build();
     header.pack_start(&new_btn);
     header.pack_end(&save_btn);
     widget.set_titlebar(Some(&header));
 
-    // Chime In control (human-in-the-loop). Shown in the header; clicking it
-    // opens a drawer with a guidance editor and Inject / Skip decisions.
     let chime_in = ChimeIn::new();
-    let chime_in_button = chime_in.button();
-    chime_in_button.set_margin_end(6);
-    header.pack_end(&chime_in_button);
-    // Placeholder decision handler: the owning app wires this to the pause
-    // controller. Until then, log the decision so the widget is exercised.
-    let chime_in_for_handler = chime_in.clone();
-    chime_in_on_decision(chime_in_for_handler);
+    chime_in_on_decision(chime_in.clone());
 
     let main_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
 
@@ -296,22 +299,16 @@ fn build_window() -> (
     sidebar.append(&sidebar_scroll);
     main_box.append(&sidebar);
 
-    // Content area.
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    content.set_hexpand(true);
-    content.set_vexpand(true);
+    // Content area with Stack.
+    let stack = gtk::Stack::new();
+    stack.set_transition_type(gtk::StackTransitionType::Crossfade);
+    stack.set_hexpand(true);
+    stack.set_vexpand(true);
 
-    // Live stream panel (right, top): shows bubble cards while streaming.
-    let live_panel = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    live_panel.set_margin_start(12);
-    live_panel.set_margin_end(12);
-    live_panel.set_margin_top(8);
-    live_panel.set_margin_bottom(8);
+    // Live stream panel (Page 1)
+    let live_panel = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    live_panel.set_css_classes(&["arena-stream-container"]);
     live_panel.set_halign(gtk::Align::Fill);
-
-    let live_title = gtk::Label::new(Some("Live Debate"));
-    live_title.set_css_classes(&["heading-3"]);
-    live_panel.prepend(&live_title);
 
     let live_empty = gtk::Label::new(Some(
         "A live debate will stream here as models generate responses.\n\nStart one via the Council API.",
@@ -329,13 +326,70 @@ fn build_window() -> (
     live_scroll.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
     live_scroll.set_vexpand(true);
     live_scroll.set_child(Some(&live_panel));
-    content.append(&live_scroll);
+    stack.add_named(&live_scroll, Some("live"));
 
-    // Transcript view (right, bottom), initially hidden.
+    // Transcript view (Page 2)
     let transcript_view = gtk::ScrolledWindow::new();
     transcript_view.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
-    transcript_view.set_visible(false);
-    content.append(&transcript_view);
+    stack.add_named(&transcript_view, Some("saved"));
+
+    stack.set_visible_child_name("live");
+
+    // Persistent Gemini-style Chime In Input Bar
+    let bottom_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    bottom_bar.add_css_class("arena-bottom-bar");
+
+    let entry = gtk::Entry::builder()
+        .placeholder_text("Type guidance to Chime In on the debate and press Enter...")
+        .css_classes(["arena-bottom-entry"])
+        .hexpand(true)
+        .build();
+
+    let send_btn = gtk::Button::builder().label("Chime In ➤").css_classes(["suggested-action"]).build();
+    bottom_bar.append(&entry);
+    bottom_bar.append(&send_btn);
+
+    // Wire submit action
+    let entry_clone = entry.clone();
+    let chime_clone = chime_in.clone();
+    let panel_clone = live_panel.clone();
+    let proxy_for_chime = Rc::clone(proxy_state);
+    let submit_guidance = std::rc::Rc::new(move || {
+        let text = entry_clone.text().trim().to_string();
+        if !text.is_empty() {
+            if let Some(ref ps) = *proxy_for_chime.borrow() {
+                if let Ok(state) = ps.lock() {
+                    state.abort_active_stage(Some(text.clone()));
+                }
+            }
+            chime_clone.inject(&text);
+            let bubble = view::create_human_bubble(&text, true);
+            panel_clone.append(&bubble);
+            entry_clone.set_text("");
+        }
+    });
+
+    let submit_for_btn = std::rc::Rc::clone(&submit_guidance);
+    send_btn.connect_clicked(move |_| {
+        submit_for_btn();
+    });
+
+    let submit_for_entry = std::rc::Rc::clone(&submit_guidance);
+    entry.connect_activate(move |_| {
+        submit_for_entry();
+    });
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.set_hexpand(true);
+    content.set_vexpand(true);
+    content.append(&stack);
+    content.append(&bottom_bar);
+    main_box.append(&content);
+
+    let stack_for_new = stack.clone();
+    new_btn.connect_clicked(move |_| {
+        stack_for_new.set_visible_child_name("live");
+    });
 
     widget.set_child(Some(&main_box));
 
@@ -344,6 +398,7 @@ fn build_window() -> (
         debate_list,
         live_panel,
         live_empty,
+        stack,
         transcript_view,
         chime_in,
     )
@@ -353,13 +408,14 @@ fn build_window() -> (
 fn wire_sidebar(
     debate_list: &gtk::ListBox,
     current_transcript: &Rc<RefCell<Option<DebateTranscript>>>,
+    stack: &gtk::Stack,
+    transcript_view: &gtk::ScrolledWindow,
 ) {
     let ct_clone = Rc::clone(current_transcript);
-    // `connect_row_activated` requires a `'static` closure, so clone the listbox
-    // handle into the closure rather than borrowing it.
     let debate_list = debate_list.clone();
+    let stack_clone = stack.clone();
+    let tv_clone = transcript_view.clone();
     debate_list.connect_row_activated(move |_listbox, row| {
-        // The row's label holds the debate id.
         let label_text = row
             .first_child()
             .and_then(|w| w.downcast::<gtk::Label>().ok())
@@ -368,6 +424,8 @@ fn wire_sidebar(
 
         if let Ok(transcript) = history::load_transcript(&label_text) {
             *ct_clone.borrow_mut() = Some(transcript.clone());
+            tv_clone.set_child(Some(&view::create_transcript_view(&transcript)));
+            stack_clone.set_visible_child_name("saved");
             tracing::info!("Loaded debate: {label_text}");
         } else {
             tracing::error!("Failed to load debate: {label_text}");
@@ -375,45 +433,11 @@ fn wire_sidebar(
     });
 }
 
-/// Populate the debate listbox with saved debates.
-fn populate_debate_list(listbox: &gtk::ListBox) {
-    let debates = match history::list_debates() {
-        Ok(ids) => ids,
-        Err(e) => {
-            tracing::warn!("Failed to list debates: {e}");
-            return;
-        }
-    };
-
-    for id in debates {
-        let row = gtk::ListBoxRow::new();
-        let label = gtk::Label::new(Some(&id));
-        label.set_xalign(0.0);
-        label.set_margin_start(12);
-        label.set_margin_end(12);
-        label.set_margin_top(6);
-        label.set_margin_bottom(6);
-
-        row.add_css_class("selectable");
-        row.set_activatable(true);
-        row.set_child(Some(&label));
-        listbox.append(&row);
-    }
-}
-
 /// Wire the "Chime In" widget's decision handler.
-///
-/// The pipeline's pause controller lives in the core backend (see
-/// `core/src/council/barrier.rs`); wiring the widget's decisions to it is the
-/// owning app's responsibility. Until then, log the decision so the widget is
-/// exercised and the human-in-the-loop path remains reachable.
 fn chime_in_on_decision(chime: ChimeIn) {
     chime.on_decision(|decision| match decision {
         super::chime_in::ChimeInDecision::Inject { guidance } => {
-            tracing::info!(
-                "Chime In: injecting guidance ({}) at next stage gate",
-                guidance.len()
-            );
+            tracing::info!("Chime In: injecting guidance ({}) at next stage gate", guidance.len());
         }
         super::chime_in::ChimeInDecision::Skip => {
             tracing::info!("Chime In: resuming without changes at next stage gate");

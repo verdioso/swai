@@ -227,3 +227,21 @@ Users frequently run multiple concurrent models in SWAI (e.g., `max_concurrent_m
      - Allows pure, concurrent multi-model operation without triggering auditor critiques or synthesizer rounds.
 3. **UI Visual State**:
    - When the toggle is OFF, dim or disable the Council-specific configuration rows in the Preferences dialog to make it obvious that the debate pipeline is dormant.
+
+---
+
+## 🔁 Post-Debate Arena Human Follow-Up & Continuous Iteration
+
+### Problem:
+When the Synthesizer finishes its job and concludes the debate session (shipping the final code back to the client), the Council session closes. If the human operator writes in the Debate Arena chat field after the debate has finished, the message displays visually, but no model responds because no active pipeline session is listening.
+
+### Proposed Architecture & Solution:
+1. **Interactive Post-Debate Continuation (`app/src/arena/window.rs`)**:
+   - When the user types and sends guidance into the bottom chat field while NO debate is currently running (pipeline has completed):
+   - Rather than dropping into a void, trigger a new follow-up Council cycle directly from the Arena UI!
+2. **Auditor Re-Engagement & Steering (`core/src/council/`)**:
+   - The **Auditor** receives the full conversation history + the previous Synthesizer code output + the new human message.
+   - The Auditor either continues where it stopped, reviews the human's new requirements, or provides concrete critique/instructions for the Synthesizer.
+   - The **Synthesizer** runs right after the Auditor, modifying and updating the existing code on disk to satisfy the human's post-debate request.
+3. **Full Multi-Turn Chat Experience**:
+   - Turns the Debate Arena into an ongoing, persistent multi-turn collaborative workspace where the human can continuously talk to their Council before, during, AND after coding tasks!

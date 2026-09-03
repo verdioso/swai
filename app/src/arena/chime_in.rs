@@ -152,6 +152,11 @@ impl ChimeIn {
         self.inner.borrow().button.clone()
     }
 
+    /// The collapsible drawer widget, for embedding into the window layout.
+    pub fn drawer(&self) -> gtk::Box {
+        self.inner.borrow().drawer.clone()
+    }
+
     /// Attach a handler invoked when the user makes a decision.
     ///
     /// The closure receives the [`ChimeInDecision`]. It is the owner's
@@ -184,6 +189,16 @@ impl ChimeIn {
     pub fn is_open(&self) -> bool {
         self.inner.borrow().drawer.is_visible()
     }
+
+    /// Inject guidance programmatically (e.g. from the bottom input bar).
+    pub fn inject(&self, guidance: &str) {
+        let me = self.inner.borrow();
+        if let Some(handler) = &me.on_decision {
+            handler(ChimeInDecision::Inject {
+                guidance: guidance.to_string(),
+            });
+        }
+    }
 }
 
 /// Build the collapsible drawer: a guidance editor row plus a hint row.
@@ -191,10 +206,11 @@ fn build_drawer() -> (gtk::Box, gtk::Entry) {
     let drawer = gtk::Box::new(gtk::Orientation::Vertical, 6);
     drawer.add_css_class("card");
     drawer.add_css_class("chime-in-drawer");
-    drawer.set_margin_start(0);
-    drawer.set_margin_end(0);
+    drawer.set_margin_start(12);
+    drawer.set_margin_end(12);
     drawer.set_margin_top(6);
     drawer.set_margin_bottom(6);
+    drawer.set_visible(false);
 
     let guidance = gtk::Entry::new();
     guidance.set_editable(true);

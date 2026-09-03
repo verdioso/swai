@@ -1927,6 +1927,60 @@ Real-time token streaming and live stage card updates in the GTK4 Debate Arena (
    streaming reachable through the wired subscription).
 
 
+## Phase 33.5 — Universal Council Proxy Interception & Zero-Config CLI Routing
+
+### What was built
+
+1. **`core/src/proxy/router.rs` (440 lines) — Universal Interception Logic:**
+   - Upgraded Council evaluation: `let should_run_council = enable_council || is_council_model(&model_id);`.
+   - When the master **"Enable Council Pipeline"** preference switch is toggled **ON** in SWAI, all incoming inference requests from any client (Hermes CLI, Claude Code, OpenAI Codex CLI, VSCode, Cursor) automatically route through the multi-stage Council debate pipeline, regardless of the requested model slug.
+   - When the master toggle is **OFF**, requests route directly to the requested backend server with zero overhead (while still supporting explicit `/model council` on demand).
+   - Added `primary_port.or(target_port)` fallback to ensure debate execution resolves the active server even when model ID defaults vary.
+
+2. **`core/src/proxy/tests_council.rs` (162 lines) — Universal Routing Tests:**
+   - Added `test_should_run_council_universal_interception` covering the full decision matrix for generic models (`run-ornith-1.5-opt`, `run-qwen25-coder-7b`, `gpt-4o`) and explicit virtual models (`council`, `council:debate`) across enabled/disabled global states.
+
+### Test results
+- `cargo check --workspace`: 0 errors, 0 warnings
+- `cargo test -p swai-core --lib proxy::tests_council`: 8/8 passed
+- `SWAI_NO_SINGLE_INSTANCE=1 cargo test --workspace -- --test-threads=1`: 380/380 passed (0 failures)
+- All files strictly under 450 lines:
+  - `core/src/proxy/router.rs`: 440 lines
+  - `core/src/proxy/tests_council.rs`: 162 lines
+
+## Phase 37 — Gemini-Style Debate Arena Refactor & Persistent Chime-In Bar
+
+### What was built
+
+1. **`app/src/arena/view.rs` (146 lines) — Modern Gemini-Style Chat Bubbles:**
+   - Single unified chat stream matching modern AI web interfaces (Gemini / ChatGPT).
+   - Right-aligned **`👤 HUMAN PROMPT:`** and **`👤 HUMAN (Chimed In):`** rounded bubbles in soft radiant lavender (`#c084fc`).
+   - Left-aligned AI response cards with bold uppercase speaker tags and theme-adaptive colors:
+     - **`🤖 GENERATOR says:`** in soft sky cyan (`#38bdf8`)
+     - **`🔍 AUDITOR says:`** in warm amber (`#fbbf24`)
+     - **`⚡ SYNTHESIZER says:`** in mint emerald (`#34d399`)
+   - Natural vertical word wrapping without inner nested scrollboxes.
+   - Fixed the sidebar selection styling bug: clicked debates now render with identical rich Gemini-grade styles.
+
+2. **`app/src/arena/stream.rs` (360 lines) — Live Stage Bubble Streaming:**
+   - Synchronized live streaming tokens into the new `.arena-bubble-ai` format.
+   - Dynamic bold uppercase header with stage numbers, model ID pills, and live pulse badges.
+
+3. **`app/src/arena/window.rs` (433 lines) & `chime_in.rs` (276 lines) — Persistent Bottom Input Bar:**
+   - Added an always-visible, rounded chat input bar anchored at the bottom of the arena.
+   - Allows instant human intervention by typing and pressing Enter or clicking `Chime In ➤`.
+   - Injects the guidance into the live debate and adds an immediate visual Human bubble into the stream.
+
+4. **`app/src/window/styles.rs` (418 lines) — CSS Rules:**
+   - Added styles for `.arena-stream-container`, `.arena-bubble-user`, `.arena-bubble-ai`, `.arena-code-block`, and `.arena-bottom-bar`.
+
+### Test results
+- `cargo check --workspace`: 0 errors, 0 warnings
+- `SWAI_NO_SINGLE_INSTANCE=1 cargo test --workspace -- --test-threads=1`: 388/388 passed (0 failures)
+- All files strictly under 450 lines.
+
+
+
 
 
 

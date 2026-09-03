@@ -13,7 +13,9 @@
 //! while isolating the human-in-the-loop behavior in one testable place.
 
 use crate::council::barrier::{CouncilPauseController, PauseDecision};
-use crate::council::types::CouncilPipelineConfig;
+use crate::council::events::CouncilEvent;
+use crate::council::executor::Executor;
+use crate::council::types::{CouncilPipelineConfig, CouncilRole, PipelineStage, TurnResult};
 
 /// Wait at the human-in-the-loop barrier before a stage executes.
 ///
@@ -39,6 +41,110 @@ pub fn await_human_gate(controller: &CouncilPauseController) -> Option<String> {
     }
 }
 
+/// Build the prompt for the Auditor when human guidance is injected during an audit.
+pub fn build_auditor_guidance_prompt(
+    input_prompt: &str,
+    draft: &str,
+    human_guidance: &str,
+) -> String {
+    format!(
+        "The human operator has chimed in with specific authoritative guidance regarding this task.\n\nOriginal prompt:\n{input_prompt}\n\nDraft to audit:\n{draft}\n\nAuthoritative Human Guidance:\n{human_guidance}\n\nRe-audit the draft specifically addressing and incorporating the user's guidance. Provide constructive technical critiques and recommendations for the Synthesizer:"
+    )
+}
+
+/// Run follow-up audit after human intervention during an audit stage.
+pub fn run_guided_audit<E: Executor>(
+    executor: &E,
+    stage: &PipelineStage,
+    stage_index: usize,
+    input_prompt: &str,
+    draft: &str,
+    feedback: &str,
+    emit: &dyn Fn(CouncilEvent),
+) -> Result<TurnResult, String> {
+    let prompt = build_auditor_guidance_prompt(input_prompt, draft, feedback);
+    let start = std::time::Instant::now();
+    emit(CouncilEvent::StageStarted {
+        stage_index,
+        role: stage.role.clone(),
+        model_id: stage.model_id.clone(),
+        model_name: stage.model_id.clone(),
+    });
+    let output = executor.execute_stream(stage, &prompt, stage_index, &|ev| emit(ev.clone()))?;
+    let duration = start.elapsed();
+    emit(CouncilEvent::StageCompleted {
+        stage_index,
+        full_text: output.clone(),
+        duration_sec: duration.as_secs_f64(),
+        tok_per_sec: 0.0,
+    });
+    Ok(TurnResult {
+        turn_index: 0,
+        role: CouncilRole::Auditor,
+        model_id: stage.model_id.clone(),
+        output,
+        duration,
+        error: None,
+    })
+}
+
+/// Handle human guidance during an audit stage by recording the intervention
+/// and triggering an updated critique from the auditor.
+pub fn handle_human_audit_feedback<E: Executor>(
+    executor: &E,
+    stage: &PipelineStage,
+    stage_index: usize,
+    draft: &str,
+    state: &mut crate::council::pipeline::DebateState,
+    emit: &dyn Fn(CouncilEvent),
+) {
+    if let Some(feedback) = executor.take_human_feedback() {
+        let trimmed = feedback.trim().trim_end_matches(['.', '!', '?']).to_lowercase();
+        if matches!(trimmed.as_str(), "stop" | "cancel" | "abort" | "halt" | "exit" | "quit" | "please stop") {
+            state.aborted = true;
+            emit(CouncilEvent::HumanIntervention {
+                stage_index,
+                feedback: feedback.clone(),
+            });
+            state.transcript.append_turn(TurnResult {
+                turn_index: state.transcript.turns.len(),
+                role: CouncilRole::Custom("Human Intervention".into()),
+                model_id: "human".into(),
+                output: "⏹ Debate stopped by human operator.".into(),
+                duration: std::time::Duration::ZERO,
+                error: None,
+            });
+            return;
+        }
+
+        emit(CouncilEvent::HumanIntervention {
+            stage_index,
+            feedback: feedback.clone(),
+        });
+        state.transcript.append_turn(TurnResult {
+            turn_index: state.transcript.turns.len(),
+            role: CouncilRole::Custom("Human Intervention".into()),
+            model_id: "human".into(),
+            output: feedback.clone(),
+            duration: std::time::Duration::ZERO,
+            error: None,
+        });
+        if let Ok(mut turn) = run_guided_audit(
+            executor,
+            stage,
+            stage_index,
+            &state.transcript.input_prompt,
+            draft,
+            &feedback,
+            emit,
+        ) {
+            turn.turn_index = state.transcript.turns.len();
+            state.audit_results.push(turn.output.clone());
+            state.transcript.append_turn(turn);
+        }
+    }
+}
+
 /// Build the prompt sent to the Synthesizer stage.
 ///
 /// When `human_feedback` is `Some`, the guidance is prepended as an
@@ -52,16 +158,14 @@ pub fn build_synthesizer_prompt(
     human_feedback: Option<&str>,
 ) -> String {
     let _ = config; // Reserved for future per-role template overrides.
-    match human_feedback {
-        Some(feedback) => format!(
-            "Human guidance (authoritative):\n{feedback}\n\nOriginal prompt:\n{}\n\nDraft response:\n{}\n\nAudit critiques:\n{}",
-            input_prompt, draft, critiques
-        ),
-        None => format!(
-            "Original prompt:\n{}\n\nDraft response:\n{}\n\nAudit critiques:\n{}",
-            input_prompt, draft, critiques
-        ),
-    }
+    let guidance = match human_feedback {
+        Some(feedback) => format!("Human guidance (authoritative):\n{feedback}\n\n"),
+        None => String::new(),
+    };
+    format!(
+        "{guidance}You are the Synthesizer. Review the Draft and Audit Critiques against the Original Prompt. Output ONLY the complete, full working final response and code directly. Do NOT repeat or quote the audit critiques or draft text:\n\nOriginal prompt:\n{}\n\nDraft response:\n{}\n\nAudit critiques:\n{}\n\nFinal Output:\n",
+        input_prompt, draft, critiques
+    )
 }
 
 #[cfg(test)]
@@ -97,7 +201,7 @@ mod tests {
     fn test_build_prompt_without_feedback_is_standard() {
         let config = CouncilPipelineConfig::default();
         let prompt = build_synthesizer_prompt(&config, "orig", "draft", "critiques", None);
-        assert!(prompt.starts_with("Original prompt:\norig"));
+        assert!(prompt.contains("Original prompt:\norig"));
         assert!(!prompt.contains("Human guidance"));
     }
 

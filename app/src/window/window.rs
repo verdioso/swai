@@ -262,6 +262,12 @@ impl MainWindow {
                 proxy_state.clone(),
                 Rc::clone(&debate_arena),
             );
+
+            crate::window::arena_wiring::attach_arena_shortcut(
+                &widget,
+                &debate_arena,
+                proxy_state.clone(),
+            );
         }
 
         let (sender, receiver) = std::sync::mpsc::channel::<ChannelMessage>();
@@ -332,6 +338,7 @@ impl MainWindow {
             quit_receiver,
             import_receiver,
             bottom_deck: bottom_deck.clone(),
+            debate_arena: Some(Rc::clone(&debate_arena)),
         });
 
         let pm_poll = Arc::clone(&pm);

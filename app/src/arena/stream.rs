@@ -25,9 +25,11 @@ use gtk4 as gtk;
 use super::types::{ArenaStreamAction, StageStatus};
 
 /// Width of a single stage bubble card.
+#[allow(dead_code)]
 const CARD_WIDTH: i32 = 320;
 
 /// Whether auto-scroll is currently pinned to the bottom of the view.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScrollMode {
     /// Follow new tokens to the bottom automatically.
@@ -88,6 +90,17 @@ impl StageState {
                 self.footer = "generating…".to_string();
             }
             ArenaStreamAction::AppendToken { stage_index, text } => {
+                if self.stage_index.is_none() {
+                    self.active = true;
+                    self.stage_index = Some(*stage_index);
+                    self.generating = true;
+                    self.status = StageStatus::Running;
+                    self.role_label = Some(match *stage_index {
+                        0 => "Generator Draft".to_string(),
+                        1 => "Auditor Critique".to_string(),
+                        _ => "Synthesizer Consensus".to_string(),
+                    });
+                }
                 if self.stage_index == Some(*stage_index) {
                     self.text.push_str(text);
                 }
@@ -96,6 +109,15 @@ impl StageState {
                 stage_index,
                 status,
             } => {
+                if self.stage_index.is_none() {
+                    self.active = true;
+                    self.stage_index = Some(*stage_index);
+                    self.role_label = Some(match *stage_index {
+                        0 => "Generator Draft".to_string(),
+                        1 => "Auditor Critique".to_string(),
+                        _ => "Synthesizer Consensus".to_string(),
+                    });
+                }
                 if self.stage_index == Some(*stage_index) {
                     self.generating = false;
                     self.status = status.clone();
@@ -143,6 +165,7 @@ struct CardState {
     /// The status footer label.
     status_label: gtk::Label,
     /// Current auto-scroll mode.
+    #[allow(dead_code)]
     scroll_mode: ScrollMode,
 }
 
@@ -159,31 +182,16 @@ pub struct StageBubbleCard {
 impl StageBubbleCard {
     /// Create an empty bubble card with no stage assigned yet.
     pub fn new() -> Self {
-        let (card, text_view, scrolled, pulse, status_label) = build_card();
+        let (card, text_view, pulse, status_label) = build_card();
 
         let state = Rc::new(RefCell::new(CardState {
             model: RefCell::new(StageState::default()),
             card: card.clone(),
-            text_view: text_view.clone(),
-            pulse: pulse.clone(),
-            status_label: status_label.clone(),
+            text_view,
+            pulse,
+            status_label,
             scroll_mode: ScrollMode::Sticky,
         }));
-
-        // Track manual scrolls: if the user moves the viewport away from the
-        // bottom, release auto-scroll; snapping back re-engages it.
-        let sc_state = Rc::clone(&state);
-        let adj = scrolled.vadjustment();
-        adj.clone().connect_changed(move |adjustment| {
-            let max = adj.upper() - adj.page_size();
-            let at_bottom = adjustment.value() >= max - 1.0;
-            let mut sc_state = sc_state.borrow_mut();
-            sc_state.scroll_mode = if at_bottom {
-                ScrollMode::Sticky
-            } else {
-                ScrollMode::Manual
-            };
-        });
 
         Self { state }
     }
@@ -225,43 +233,67 @@ impl StageBubbleCard {
         if let Some(old) = self.state.borrow().card.first_child() {
             self.state.borrow().card.remove(&old);
         }
-        let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         header.set_halign(gtk::Align::Fill);
 
-        let stage_tag = gtk::Label::new(Some(&format!(
-            "#{}",
-            model.stage_index.map(|i| i + 1).unwrap_or(0)
-        )));
-        stage_tag.set_css_classes(&["badge"]);
+        let role_name = model.role_label.as_deref().unwrap_or("STAGE");
+        let (role_caps, color, css_class) = if role_name.contains("Generator") {
+            ("GENERATOR", "#38bdf8", "generator")
+        } else if role_name.contains("Auditor") {
+            ("AUDITOR", "#fbbf24", "auditor")
+        } else if role_name.contains("Synthesizer") || role_name.contains("Consensus") {
+            ("SYNTHESIZER", "#34d399", "synthesizer")
+        } else {
+            ("AI", "#38bdf8", "generator")
+        };
 
-        let role = gtk::Label::new(model.role_label.as_deref());
-        role.add_css_class("title-2");
+        let title_label = gtk::Label::new(None);
+        title_label.set_markup(&format!(
+            "<span foreground='{}'><b>{}</b></span> <span foreground='{}'>says:</span>",
+            color, role_caps, color
+        ));
+        title_label.set_halign(gtk::Align::Start);
 
-        // Human intervention badge: 👤 Human Intervention, shown alongside the
-        // role when a "Chime In" injected guidance into this stage.
+        let stage_num = model.stage_index.map(|i| i + 1).unwrap_or(0);
+        let stage_badge = gtk::Label::new(Some(&format!("#{stage_num}")));
+        stage_badge.set_css_classes(&["badge"]);
+
+        header.append(&stage_badge);
+        header.append(&title_label);
+
+        // Human intervention badge
         if let Some(feedback) = &model.human_intervention {
-            let badge = gtk::Label::new(Some("👤 Human Intervention"));
+            let badge = gtk::Label::new(Some("👤 Chime-In Added"));
             badge.add_css_class("badge");
             badge.add_css_class("human-intervention-badge");
-            // Build the tooltip text up front so it outlives the call.
             let tooltip: String = if feedback.trim().is_empty() {
                 "Human resumed without changes".to_string()
             } else {
-                format!("Human intervention guidance:\n{feedback}")
+                format!("Human guidance:\n{feedback}")
             };
             badge.set_tooltip_text(Some(&tooltip));
             header.append(&badge);
         }
 
-        let model_label = gtk::Label::new(model.model_id.as_deref());
-        model_label.set_css_classes(&["dim-label"]);
+        let model_label = gtk::Label::new(None);
+        if let Some(m_id) = &model.model_id {
+            model_label.set_markup(&format!(
+                "<span alpha='65%' size='small'>({})</span>",
+                glib::markup_escape_text(m_id)
+            ));
+        }
         model_label.set_hexpand(true);
         model_label.set_halign(gtk::Align::End);
 
-        header.append(&stage_tag);
-        header.append(&role);
         header.append(&model_label);
         self.state.borrow().card.prepend(&header);
+
+        // Apply role accent border
+        let s = self.state.borrow();
+        s.card.remove_css_class("generator");
+        s.card.remove_css_class("auditor");
+        s.card.remove_css_class("synthesizer");
+        s.card.add_css_class(css_class);
 
         // Pulse badge.
         if model.is_generating() {
@@ -270,23 +302,10 @@ impl StageBubbleCard {
             self.state.borrow().pulse.remove_css_class("pulse-active");
         }
 
-        // Buffer + auto-scroll. Re-stick while generating and, when sticky,
-        // pin the viewport to the newly appended text so the reader always sees
-        // the latest tokens without having to scroll.
+        // Buffer update.
         {
             let state = self.state.borrow();
             state.text_view.buffer().set_text(&model.text);
-        }
-        if model.is_generating() {
-            let mut state = self.state.borrow_mut();
-            state.scroll_mode = ScrollMode::Sticky;
-            // Scroll the text view so the end of the buffer is visible. This is
-            // the auto-scroll: it runs on the main thread via the buffered text
-            // update above, so there is no race with the bridge thread.
-            let mut end = state.text_view.buffer().end_iter();
-            state
-                .text_view
-                .scroll_to_iter(&mut end, 0.0, true, 0.0, 1.0);
         }
 
         // Footer.
@@ -294,19 +313,19 @@ impl StageBubbleCard {
     }
 }
 
-/// Build the card skeleton, returning all the widgets the card needs to hold
-/// directly (no tree searching required).
+/// Build the card skeleton as a full-width chat bubble.
 fn build_card() -> (
     gtk::Box,
     gtk::TextView,
-    gtk::ScrolledWindow,
     gtk::Label,
     gtk::Label,
 ) {
-    let card = gtk::Box::new(gtk::Orientation::Vertical, 6);
-    card.set_width_request(CARD_WIDTH);
-    card.add_css_class("card");
-    card.add_css_class("arena-bubble");
+    let card = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    card.add_css_class("arena-bubble-ai");
+    card.set_margin_start(8);
+    card.set_margin_end(8);
+    card.set_margin_top(6);
+    card.set_margin_bottom(16);
 
     // Header row (placeholder; replaced on stage start).
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -324,26 +343,21 @@ fn build_card() -> (
     pulse.set_css_classes(&["dim-label"]);
     header.append(&pulse);
 
-    // Streaming text view inside a scroll container.
+    // Streaming text view expanding naturally without inner scrollbox.
     let text_view = gtk::TextView::new();
     text_view.set_editable(false);
     text_view.set_wrap_mode(gtk::WrapMode::WordChar);
-    text_view.set_monospace(true);
+    text_view.set_monospace(false);
     text_view.set_pixels_above_lines(2);
     text_view.set_pixels_below_lines(2);
-
-    let scrolled = gtk::ScrolledWindow::new();
-    scrolled.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
-    scrolled.set_min_content_height(80);
-    scrolled.set_max_content_height(320);
-    scrolled.set_child(Some(&text_view));
-    card.append(&scrolled);
+    card.append(&text_view);
 
     // Status footer.
     let status_label = gtk::Label::new(Some("idle"));
     status_label.set_halign(gtk::Align::Start);
     status_label.set_css_classes(&["dim-label"]);
+    status_label.set_margin_start(4);
     card.append(&status_label);
 
-    (card, text_view, scrolled, pulse, status_label)
+    (card, text_view, pulse, status_label)
 }

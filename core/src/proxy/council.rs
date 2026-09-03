@@ -72,11 +72,16 @@ impl Executor for ProxyExecutor {
         }
         messages.push(serde_json::json!({"role": "user", "content": content}));
 
+        let max_tokens = match stage.role {
+            crate::council::CouncilRole::Auditor => 800,
+            _ => 2048,
+        };
         let body = serde_json::json!({
             "model": stage.model_id,
             "messages": messages,
             "temperature": stage.temperature,
             "top_p": stage.top_p,
+            "max_tokens": max_tokens,
         });
         let body_str = serde_json::to_string(&body).unwrap_or_default();
         match self
@@ -93,7 +98,11 @@ impl Executor for ProxyExecutor {
                     json["choices"]
                         .as_array()
                         .and_then(|choices| choices.first())
-                        .and_then(|choice| choice["message"]["content"].as_str())
+                        .and_then(|choice| {
+                            choice["message"]["content"]
+                                .as_str()
+                                .or_else(|| choice["message"]["reasoning_content"].as_str())
+                        })
                         .map(String::from)
                         .ok_or_else(|| "No response content in choices".into())
                 } else {
@@ -102,6 +111,127 @@ impl Executor for ProxyExecutor {
             }
             Err(e) => Err(format!("Request failed: {}", e)),
         }
+    }
+
+    fn execute_stream(
+        &self,
+        stage: &PipelineStage,
+        input: &str,
+        stage_index: usize,
+        emit: &dyn Fn(&CouncilEvent),
+    ) -> Result<String, String> {
+        let target_port = {
+            if let Ok(state) = self.state.lock() {
+                state
+                    .active_models
+                    .iter()
+                    .find(|(id, _)| *id == &stage.model_id)
+                    .map(|(_, port)| *port)
+                    .unwrap_or(self.primary_port)
+            } else {
+                self.primary_port
+            }
+        };
+        let url = format!("http://localhost:{}/v1/chat/completions", target_port);
+        let content = if !stage.prompt_template.is_empty() {
+            stage.prompt_template.replace("{input}", input)
+        } else {
+            input.to_string()
+        };
+
+        let mut messages = Vec::new();
+        if let Some(ref sys) = stage.system_prompt {
+            if !sys.is_empty() {
+                messages.push(serde_json::json!({"role": "system", "content": sys}));
+            }
+        }
+        messages.push(serde_json::json!({"role": "user", "content": content}));
+
+        let max_tokens = match stage.role {
+            crate::council::CouncilRole::Auditor => 800,
+            _ => 2048,
+        };
+
+        let body = serde_json::json!({
+            "model": stage.model_id,
+            "messages": messages,
+            "temperature": stage.temperature,
+            "top_p": stage.top_p,
+            "max_tokens": max_tokens,
+            "stream": true,
+        });
+        let body_str = serde_json::to_string(&body).unwrap_or_default();
+        let resp = self
+            .client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .body(body_str)
+            .send()
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if !resp.status().is_success() {
+            return Err(format!("Backend returned status {}", resp.status()));
+        }
+
+        if let Ok(state) = self.state.lock() {
+            state.reset_abort();
+        }
+
+        let mut accumulated = String::new();
+        let reader = std::io::BufReader::new(resp);
+        use std::io::BufRead;
+        for line in reader.lines() {
+            if let Ok(state) = self.state.lock() {
+                if state.is_abort_requested() {
+                    tracing::info!("Inference stream interrupted immediately by human chime-in!");
+                    break;
+                }
+            }
+            let line = line.map_err(|e| format!("Stream read error: {}", e))?;
+            let trimmed = line.trim();
+            if trimmed.starts_with("data: ") {
+                let data = &trimmed[6..];
+                if data == "[DONE]" {
+                    break;
+                }
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                    if let Some(delta) = json["choices"]
+                        .as_array()
+                        .and_then(|c| c.first())
+                        .and_then(|c| c.get("delta"))
+                        .and_then(|d| {
+                            d.get("content")
+                                .or_else(|| d.get("reasoning_content"))
+                                .or_else(|| d.get("reasoning"))
+                        })
+                        .and_then(|c| c.as_str())
+                    {
+                        if !delta.is_empty() {
+                            accumulated.push_str(delta);
+                            emit(&CouncilEvent::TokenChunk {
+                                stage_index,
+                                text: delta.to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        let was_aborted = self.state.lock().map(|s| s.is_abort_requested()).unwrap_or(false);
+        if accumulated.is_empty() {
+            if was_aborted {
+                Ok("[Generation interrupted by human guidance]".to_string())
+            } else {
+                self.execute(stage, input)
+            }
+        } else {
+            Ok(accumulated)
+        }
+    }
+
+    fn take_human_feedback(&self) -> Option<String> {
+        self.state.lock().ok().and_then(|s| s.take_human_guidance())
     }
 }
 
@@ -128,6 +258,10 @@ impl Executor for EventProxyExecutor {
         emit: &dyn Fn(&CouncilEvent),
     ) -> Result<String, String> {
         self.inner.execute_stream(stage, input, stage_index, emit)
+    }
+
+    fn take_human_feedback(&self) -> Option<String> {
+        self.inner.take_human_feedback()
     }
 }
 
@@ -157,6 +291,13 @@ pub fn run_council_and_record_telemetry<E: Executor>(
     };
 
     if let Some(transcript) = transcript_opt {
+        // Automatically persist the full debate transcript to disk (skip transient queries)
+        if !crate::council::history::is_transient(transcript) {
+            if let Err(e) = crate::council::save_transcript(transcript) {
+                tracing::warn!("Failed to save debate transcript: {}", e);
+            }
+        }
+
         for (i, turn) in transcript.turns.iter().enumerate() {
             let role_name = match turn.role {
                 crate::council::CouncilRole::Generator => "1. Generator",
@@ -197,99 +338,58 @@ pub fn run_council_and_record_telemetry<E: Executor>(
     (outcome, stages)
 }
 
-/// Build SSE events for streaming a council debate outcome.
-pub fn build_council_sse_events(outcome: &DebateOutcome, _model_id: &str) -> Vec<Vec<u8>> {
-    let mut events = Vec::new();
-
-    let transcript = match outcome {
-        DebateOutcome::Success { transcript, .. } => transcript,
-        DebateOutcome::Partial { transcript, .. } => transcript,
-        DebateOutcome::Aborted { transcript, .. } => transcript,
-    };
-
-    let mut log_dir = dirs::data_local_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-    log_dir.push("swai");
-    log_dir.push("logs");
-    log_dir.push("council_transcripts");
-    let _ = std::fs::create_dir_all(&log_dir);
-
-    let log_path = log_dir.join(format!("{}.md", transcript.session_id));
-    let mut md = String::new();
-    md.push_str(&format!(
-        "# Council Debate Transcript: {}\n\n",
-        transcript.session_id
-    ));
-    md.push_str(&format!(
-        "## Original Prompt\n```\n{}\n```\n\n",
-        transcript.input_prompt
-    ));
-    for turn in &transcript.turns {
-        md.push_str(&format!(
-            "## Turn {} - {:?} ({})\n",
-            turn.turn_index, turn.role, turn.model_id
-        ));
-        md.push_str(&format!("Duration: {:.2?}\n", turn.duration));
-        if let Some(err) = &turn.error {
-            md.push_str(&format!("**Error:** {}\n", err));
-        } else {
-            md.push_str(&format!("**Output:**\n\n```\n{}\n```\n", turn.output));
+/// Check if a request is auxiliary (e.g. title generation, summarization, tool result follow-up).
+pub fn is_auxiliary_request(body: &[u8]) -> bool {
+    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(body) {
+        if let Some(max_tokens) = json.get("max_tokens").and_then(|m| m.as_u64()) {
+            if max_tokens <= 128 {
+                return true;
+            }
         }
-        md.push_str("\n---\n\n");
-    }
-    let _ = std::fs::write(&log_path, md);
-    tracing::info!("Council transcript saved to {}", log_path.display());
-
-    // Stream the final response as text deltas (chunked for SSE).
-    let final_text = match outcome {
-        DebateOutcome::Success { final_response, .. } => final_response.clone(),
-        DebateOutcome::Partial {
-            fallback_response, ..
-        } => {
-            format!("Debate partial: {}", fallback_response)
-        }
-        DebateOutcome::Aborted { reason, .. } => format!("Debate aborted: {}", reason),
-    };
-
-    // Anthropic content_block_start
-    events.push(
-        "event: content_block_start\ndata: {\"type\": \"content_block_start\", \"index\": 0, \"content_block\": {\"type\": \"text\", \"text\": \"\"}}\n\n".to_string().into_bytes()
-    );
-
-    let chunk_size = 50;
-    let chars: Vec<char> = final_text.chars().collect();
-    let mut accumulated = String::new();
-    let mut prev_len = 0;
-
-    for (i, ch) in chars.iter().enumerate() {
-        accumulated.push(*ch);
-        if (i + 1) % chunk_size == 0 || i == chars.len() - 1 {
-            let delta = &accumulated[prev_len..];
-            let delta_payload = serde_json::json!({
-                "type": "content_block_delta",
-                "index": 0,
-                "delta": {
-                    "type": "text_delta",
-                    "text": delta
+        if let Some(messages) = json.get("messages").and_then(|m| m.as_array()) {
+            // If the latest message is a tool result, the tool has already executed on disk!
+            if let Some(last_msg) = messages.last() {
+                let role = last_msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+                if role == "tool" {
+                    return true;
                 }
-            });
-            events.push(
-                format!("event: content_block_delta\ndata: {}\n\n", delta_payload).into_bytes(),
-            );
-            prev_len = i + 1;
+                if let Some(content_arr) = last_msg.get("content").and_then(|c| c.as_array()) {
+                    if content_arr.iter().any(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_result")) {
+                        return true;
+                    }
+                }
+            }
+
+            for msg in messages {
+                if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
+                    let lower = content.to_lowercase();
+                    if lower.contains("title") && msg.get("role").and_then(|r| r.as_str()) == Some("system") {
+                        return true;
+                    }
+                }
+            }
         }
     }
-
-    // Anthropic content_block_stop & message_delta & message_stop
-    events.push(
-        "event: content_block_stop\ndata: {\"type\": \"content_block_stop\", \"index\": 0}\n\nevent: message_delta\ndata: {\"type\": \"message_delta\", \"delta\": {\"stop_reason\": \"end_turn\", \"stop_sequence\": null}, \"usage\": {\"output_tokens\": 10}}\n\nevent: message_stop\ndata: {\"type\": \"message_stop\"}\n\n".to_string().into_bytes()
-    );
-    events
+    false
 }
 
-/// Escape special characters in SSE text data.
-pub fn escape_sse_text(text: &str) -> String {
-    text.replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
+/// Determine whether council debate should run universally across all models.
+pub fn should_run_council_universal(
+    req: &tiny_http::Request,
+    state: &Arc<Mutex<ProxyState>>,
+    body: &[u8],
+) -> bool {
+    if is_auxiliary_request(body) {
+        return false;
+    }
+    let enable_council = state.lock().map(|s| s.enable_council).unwrap_or(false);
+    if enable_council {
+        return true;
+    }
+    for header in req.headers() {
+        if header.field.as_str().as_str().eq_ignore_ascii_case("x-swai-pipeline") {
+            return true;
+        }
+    }
+    false
 }

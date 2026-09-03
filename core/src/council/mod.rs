@@ -6,6 +6,7 @@
 pub mod barrier;
 pub mod events;
 pub mod executor;
+pub mod history;
 pub mod human_feedback;
 pub mod pipeline;
 pub mod streaming;
@@ -26,6 +27,7 @@ mod tests_streaming;
 pub use barrier::CouncilPauseController;
 pub use events::CouncilEvent;
 pub use executor::Executor;
+pub use history::{list_debates, load_transcript, save_transcript};
 pub use pipeline::{CouncilEngine, CouncilError};
 pub use types::{
     CouncilMode, CouncilPipelineConfig, CouncilRole, DebateOutcome, DebateTranscript,

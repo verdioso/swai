@@ -7,6 +7,8 @@
 
 pub mod anthropic;
 pub mod council;
+pub mod council_route;
+pub mod council_sse;
 pub mod ollama;
 pub mod ollama_chat;
 pub mod ollama_generate;
@@ -18,6 +20,7 @@ pub mod server;
 pub mod session_tracker;
 pub mod state;
 pub mod streaming;
+pub mod tool_calling;
 #[cfg(test)]
 mod tests_council;
 #[cfg(test)]
