@@ -46,11 +46,12 @@ fn build_edit_section() -> Menu {
     menu
 }
 
-/// Build the View section: Refresh, Toggle Logs Panel.
+/// Build the View section: Refresh, Toggle Logs Panel, Debate Arena.
 fn build_view_section() -> Menu {
     let menu = Menu::new();
     menu.append(Some("Refresh"), Some("win.refresh"));
     menu.append(Some("Toggle Logs Panel"), Some("win.toggle_logs"));
+    menu.append(Some("Debate Arena"), Some("win.debate_arena"));
     menu
 }
 

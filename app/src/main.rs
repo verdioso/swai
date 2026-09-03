@@ -143,6 +143,9 @@ fn main() -> glib::ExitCode {
         .flags(gio::ApplicationFlags::NON_UNIQUE)
         .build();
 
+    // Ctrl+Shift+D accelerator for the View → Debate Arena menu action.
+    app.set_accels_for_action("win.debate_arena", &["<Ctrl><Shift>d"]);
+
     app.connect_activate(|app| {
         let config = match swai_core::config::Config::load() {
             Ok(cfg) => cfg,

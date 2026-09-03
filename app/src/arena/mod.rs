@@ -16,3 +16,5 @@ pub mod window;
 
 #[cfg(test)]
 mod stream_tests;
+
+pub use window::ArenaWindow;

@@ -1,6 +1,7 @@
 //! SWAI — Main application window subsystem.
 
 pub mod adoption;
+pub mod arena_wiring;
 pub mod bottom_deck;
 pub mod card_wiring;
 pub mod dialogs;

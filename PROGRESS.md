@@ -1835,6 +1835,97 @@ Real-time token streaming and live stage card updates in the GTK4 Debate Arena (
   controller (`CouncilPauseController`) to the injected/skip decisions.
 
 
+## Phase 33.4 — Debate Arena Window Wiring (Menu Entry + Live Subscription)
+
+> Continues Phases 33.1 / 33.2 / 33.3. The `ArenaWindow` (history sidebar,
+> live-stream panel, transcript view, Chime In control) already existed and
+> compiled, but nothing instantiated or presented it. This phase makes the
+> Arena window user-visible.
+
+### What was built
+
+1. **`app/src/menu.rs` (65 lines) — View menu entry:**
+   - Appended `menu.append(Some("Debate Arena"), Some("win.debate_arena"))` to
+     `build_view_section()`. Existing Refresh / Toggle Logs Panel items
+     unchanged. The action name `win.debate_arena` matches the `debate_arena`
+     `SimpleAction` registered in `header.rs`.
+
+2. **`app/src/window/arena_wiring.rs` (99 lines) — construction + subscription
+   bridge:**
+   - `open_debate_arena(cache, proxy_state)`: if the cached handle is `None`,
+     constructs `ArenaWindow::new()`, subscribes, and presents it; if `Some`,
+     calls `.present()` to raise/restore the existing window (single-instance
+     reuse).
+   - `subscribe_to_debate(arena, proxy_state)`: reads `ProxyState.events_rx`
+     behind a short-lived `Arc<Mutex<...>>` lock (recovering from a poisoned
+     lock), then hands the receiver to `ArenaWindow::observe_debate`. If
+     `events_rx` is `None` (no debate in flight) the window is still presented
+     so the user sees the empty-state placeholder and can browse saved debates.
+   - **Re-subscribe policy (Option B):** re-subscribe on every menu click.
+     `ProxyState.events_rx` is replaced by the router when a new debate begins
+     (`core/src/proxy/router.rs`), so re-subscribing on click keeps the Arena
+     window in sync with the most-recently-started debate without an external
+     poller or a hook inside `set_events_receiver`.
+   - The cached handle type alias `DebateArenaCache = Rc<RefCell<Option<ArenaWindow>>>`.
+
+3. **`app/src/window/header.rs` (144 lines) — SimpleAction:**
+   - `wire_actions()` gained a `debate_arena_cache` parameter (inherited from
+     `MainWindow`). Registers a `debate_arena` `SimpleAction` whose closure
+     calls `crate::window::arena_wiring::open_debate_arena(...)`.
+
+4. **`app/src/window/window.rs` (442 lines) — MainWindow wiring:**
+   - Added `debate_arena: Rc<RefCell<Option<ArenaWindow>>>` field.
+   - Initialized a fresh `Rc<RefCell<Option<ArenaWindow>>>` before the wire
+     block and passed it to `wire_actions`; stored a clone in the `Self`
+     literal.
+
+5. **`app/src/window/mod.rs` — module registration:**
+   - Added `pub mod arena_wiring;`.
+
+6. **`app/src/arena/mod.rs` — public re-export:**
+   - Added `pub use window::ArenaWindow;` so `crate::arena::ArenaWindow`
+     resolves from the window subsystem.
+
+7. **`app/src/main.rs` (252 lines) — Ctrl+Shift+D accelerator:**
+   - After the `gtk::Application` is built,
+     `app.set_accels_for_action("win.debate_arena", &["<Ctrl><Shift>d"]);`
+     binds the View → Debate Arena action to the `Ctrl+Shift+D` shortcut.
+
+### Thread-safety notes
+- GTK construction/presentation happens only on the GTK main thread (the
+  `debate_arena` action closure runs there). `arena_wiring.rs` never moves a
+  GTK handle across a thread; the background→main-thread bridge lives entirely
+  in the pre-existing `ArenaWindow::observe_debate` (tokio broadcast → mpsc →
+  `glib::timeout_add_local`).
+- `ProxyState.events_rx` is locked only long enough to read the `Option`, then
+  the lock is dropped before the bridge thread is spawned. Poisoned locks are
+  recovered via `into_inner()` (consistent with the project's mutex-poisoning
+  hardening).
+
+### Test results
+- `cargo check --workspace`: 0 errors, 0 warnings
+- `cargo test -p swai -- --test-threads=1`: 55/55 passed
+- `SWAI_NO_SINGLE_INSTANCE=1 cargo test --workspace -- --test-threads=1`: 320
+  core unit + 4 integration passed (0 failures)
+- All touched files strictly under 450 lines:
+  - `app/src/window/arena_wiring.rs`: 99 lines
+  - `app/src/window/header.rs`: 144 lines
+  - `app/src/window/window.rs`: 442 lines
+  - `app/src/menu.rs`: 65 lines
+  - `app/src/main.rs`: 252 lines
+  - `app/src/arena/window.rs`: 422 lines
+  - `app/src/arena/mod.rs`: 20 lines
+
+### Manual UI check (to be performed by user)
+1. `SWAI_NO_SINGLE_INSTANCE=1 cargo run` → **View → Debate Arena** appears in the
+   menu bar; **Ctrl+Shift+D** works.
+2. Clicking it presents the Arena window (title "Arena — Debate", history
+   sidebar + live-stream panel).
+3. With no debate in flight, the window shows the empty-state placeholder.
+4. While a council debate is in flight, tokens stream into the stage bubble
+   cards with auto-scroll and active pulse badges (requires Phase 33.2's
+   streaming reachable through the wired subscription).
+
 
 
 

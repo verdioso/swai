@@ -46,6 +46,8 @@ pub struct MainWindow {
     footer_model_label: gtk::Label,
     unmanaged_banner: Option<adw::Banner>,
     pub bottom_deck: super::bottom_deck::BottomDeck,
+    /// Cached Debate Arena window handle for single-instance window reuse.
+    pub debate_arena: std::rc::Rc<std::cell::RefCell<Option<crate::arena::ArenaWindow>>>,
 }
 
 impl MainWindow {
@@ -230,6 +232,10 @@ impl MainWindow {
             glib::Propagation::Stop
         });
 
+        // Cached Debate Arena window handle for single-instance window reuse.
+        let debate_arena: std::rc::Rc<std::cell::RefCell<Option<crate::arena::ArenaWindow>>> =
+            Rc::new(RefCell::new(None));
+
         {
             let pm_wa = Arc::clone(&pm);
             let app_wa = app.clone();
@@ -248,7 +254,14 @@ impl MainWindow {
                 }
                 app_wa.quit();
             });
-            wire_actions(&widget, app, on_quit, Arc::clone(&pm), proxy_state.clone());
+            wire_actions(
+                &widget,
+                app,
+                on_quit,
+                Arc::clone(&pm),
+                proxy_state.clone(),
+                Rc::clone(&debate_arena),
+            );
         }
 
         let (sender, receiver) = std::sync::mpsc::channel::<ChannelMessage>();
@@ -405,6 +418,7 @@ impl MainWindow {
             footer_model_label,
             unmanaged_banner,
             bottom_deck,
+            debate_arena: Rc::clone(&debate_arena),
         }
     }
 

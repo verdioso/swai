@@ -16,6 +16,7 @@ pub fn wire_actions(
     on_quit: Arc<dyn Fn()>,
     process_manager: Arc<Mutex<ProcessManager>>,
     proxy_state: Option<Arc<Mutex<ProxyState>>>,
+    debate_arena_cache: std::rc::Rc<std::cell::RefCell<Option<crate::arena::ArenaWindow>>>,
 ) {
     let quit_action = SimpleAction::new("quit", None);
     quit_action.connect_activate(move |_, _| {
@@ -74,6 +75,12 @@ pub fn wire_actions(
 
     let toggle_logs_action = SimpleAction::new("toggle_logs", None);
     window.add_action(&toggle_logs_action);
+
+    let debate_arena_action = SimpleAction::new("debate_arena", None);
+    debate_arena_action.connect_activate(move |_, _| {
+        crate::window::arena_wiring::open_debate_arena(&debate_arena_cache, proxy_state.clone());
+    });
+    window.add_action(&debate_arena_action);
 }
 
 pub fn build_header_bar(_app: &Application) -> HeaderBar {
