@@ -36,6 +36,7 @@ pub enum CouncilError {
 pub struct DebateState {
     pub transcript: DebateTranscript,
     pub draft: Option<String>,
+    pub planner_directive: Option<crate::council::planner::PlannerDirective>,
     pub audit_results: Vec<String>,
     pub warnings: Vec<String>,
     pub aborted: bool,
@@ -46,6 +47,7 @@ impl DebateState {
         Self {
             transcript: DebateTranscript::new(session_id, input_prompt, config),
             draft: None,
+            planner_directive: None,
             audit_results: Vec::new(),
             warnings: Vec::new(),
             aborted: false,
@@ -58,13 +60,8 @@ impl DebateState {
                 self.warnings.push(format!("Stage failed (abort): {error}"));
                 self.aborted = true;
             }
-            FallbackAction::Skip => {
-                self.warnings.push(format!("Stage skipped: {error}"));
-            }
-            FallbackAction::Retry { max_retries } => {
-                self.warnings
-                    .push(format!("Stage retried {max_retries} times failed: {error}"));
-            }
+            FallbackAction::Skip => self.warnings.push(format!("Stage skipped: {error}")),
+            FallbackAction::Retry { max_retries } => self.warnings.push(format!("Stage retried {max_retries} times failed: {error}")),
         }
     }
 }
@@ -154,16 +151,22 @@ impl<E: Executor> CouncilEngine<E> {
         );
         crate::council::history::save_intermediate(&state.transcript);
 
-        // Stage 1: Generator (first stage with role Generator or first stage)
-        self.run_generator(&mut state);
+        // Stage 0: Planner (if configured)
+        crate::council::planner::run_planner_stage(&self.config.stages, &self.executor, &mut state, &|e| self.emit(e));
         crate::council::history::save_intermediate(&state.transcript);
-        if !state.aborted {
-            // Stage 2: Auditor(s)
-            self.run_auditors(&mut state);
+
+        if !state.aborted && !crate::council::planner::should_skip_generation_for_inspection(&mut state) {
+            // Stage 1: Generator (first stage with role Generator or first stage)
+            self.run_generator(&mut state);
             crate::council::history::save_intermediate(&state.transcript);
-            // Stage 3: Synthesizer
-            self.run_synthesizer(&mut state);
-            crate::council::history::save_intermediate(&state.transcript);
+            if !state.aborted {
+                // Stage 2: Auditor(s)
+                self.run_auditors(&mut state);
+                crate::council::history::save_intermediate(&state.transcript);
+                // Stage 3: Synthesizer
+                self.run_synthesizer(&mut state);
+                crate::council::history::save_intermediate(&state.transcript);
+            }
         }
 
         let outcome = self.build_outcome(state);
@@ -191,7 +194,11 @@ impl<E: Executor> CouncilEngine<E> {
             }
         };
 
-        let input = &state.transcript.input_prompt;
+        let scoped_input = if let Some(ref dir) = state.planner_directive {
+            crate::council::planner::build_scoped_generator_prompt(dir, &state.transcript.input_prompt)
+        } else {
+            state.transcript.input_prompt.clone()
+        };
         let start = Instant::now();
 
         self.emit(CouncilEvent::StageStarted {
@@ -201,10 +208,7 @@ impl<E: Executor> CouncilEngine<E> {
             model_name: stage.model_id.clone(),
         });
 
-        match self
-            .executor
-            .execute_stream(stage, input, stage_index, &|event| self.emit(event.clone()))
-        {
+        match self.executor.execute_stream(stage, &scoped_input, stage_index, &|event| self.emit(event.clone())) {
             Ok(output) => {
                 let dur = start.elapsed();
                 self.emit(CouncilEvent::StageCompleted {

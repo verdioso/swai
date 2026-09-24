@@ -285,34 +285,5 @@ pub fn error_response(status: u16, message: &str) -> Response<std::io::Cursor<Ve
         )
 }
 
-/// Extract the user's prompt from a chat completions JSON body.
-pub fn extract_prompt_from_body(body: &[u8]) -> Option<String> {
-    let json_val = serde_json::from_slice::<serde_json::Value>(body).ok()?;
-    let messages = json_val.get("messages").and_then(|m| m.as_array())?;
+pub use super::prompt::extract_prompt_from_body;
 
-    // Iterate backwards to find the LAST user message
-    for msg in messages.iter().rev() {
-        if let Some(role) = msg.get("role").and_then(|r| r.as_str()) {
-            if role == "user" {
-                // Handle string content
-                if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
-                    return Some(content.to_string());
-                }
-                // Handle array content (Anthropic format)
-                if let Some(content_arr) = msg.get("content").and_then(|c| c.as_array()) {
-                    let mut full_text = String::new();
-                    for block in content_arr {
-                        if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
-                            full_text.push_str(text);
-                            full_text.push('\n');
-                        }
-                    }
-                    if !full_text.is_empty() {
-                        return Some(full_text.trim().to_string());
-                    }
-                }
-            }
-        }
-    }
-    None
-}

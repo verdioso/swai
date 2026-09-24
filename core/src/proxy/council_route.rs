@@ -99,7 +99,11 @@ pub fn handle_council_request(
     client: Client,
     target_port: Option<u16>,
 ) {
-    let pipeline_config = resolve_pipeline_config(&req, &state);
+    let mut pipeline_config = resolve_pipeline_config(&req, &state);
+    let available_tools = super::tool_calling::extract_openai_tools(request_body);
+    if let Some(ref tools) = available_tools {
+        super::tool_calling::inject_tool_discipline_into_config(&mut pipeline_config, tools);
+    }
 
     let primary_port = match state.lock() {
         Ok(s) => s.primary_port.or(target_port),
@@ -139,7 +143,6 @@ pub fn handle_council_request(
     }
 
     let is_openai = req.url().contains("/chat/completions") || req.url().contains("/completions");
-    let available_tools = super::tool_calling::extract_openai_tools(request_body);
 
     if !is_stream {
         let (outcome, _) = run_council_and_record_telemetry(&engine, &prompt, &state_for_council);

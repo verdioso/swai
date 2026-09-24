@@ -21,6 +21,7 @@ pub const PURPLE_COLOR: &str = "#c084fc";
 /// Get role metadata: (CAPS name, color hex, css class).
 pub fn role_meta(role: &CouncilRole) -> (&'static str, &'static str, &'static str) {
     match role {
+        CouncilRole::Planner => ("PLANNER", PURPLE_COLOR, "planner"),
         CouncilRole::Generator => ("GENERATOR", CYAN_COLOR, "generator"),
         CouncilRole::Auditor => ("AUDITOR", AMBER_COLOR, "auditor"),
         CouncilRole::Synthesizer => ("SYNTHESIZER", GREEN_COLOR, "synthesizer"),

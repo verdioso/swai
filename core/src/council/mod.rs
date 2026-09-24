@@ -9,6 +9,7 @@ pub mod executor;
 pub mod history;
 pub mod human_feedback;
 pub mod pipeline;
+pub mod planner;
 pub mod streaming;
 pub mod types;
 pub mod vram;
@@ -33,4 +34,5 @@ pub use types::{
     CouncilMode, CouncilPipelineConfig, CouncilRole, DebateOutcome, DebateTranscript,
     FallbackAction, PipelineStage, TurnResult,
 };
+pub use planner::PlannerDirective;
 pub use vram::{get_available_vram_bytes, recommend_mode};

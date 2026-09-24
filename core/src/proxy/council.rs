@@ -73,7 +73,7 @@ impl Executor for ProxyExecutor {
         messages.push(serde_json::json!({"role": "user", "content": content}));
 
         let max_tokens = match stage.role {
-            crate::council::CouncilRole::Auditor => 800,
+            crate::council::CouncilRole::Planner | crate::council::CouncilRole::Auditor => 800,
             _ => 2048,
         };
         let body = serde_json::json!({
@@ -148,7 +148,7 @@ impl Executor for ProxyExecutor {
         messages.push(serde_json::json!({"role": "user", "content": content}));
 
         let max_tokens = match stage.role {
-            crate::council::CouncilRole::Auditor => 800,
+            crate::council::CouncilRole::Planner | crate::council::CouncilRole::Auditor => 800,
             _ => 2048,
         };
 
@@ -300,9 +300,10 @@ pub fn run_council_and_record_telemetry<E: Executor>(
 
         for (i, turn) in transcript.turns.iter().enumerate() {
             let role_name = match turn.role {
-                crate::council::CouncilRole::Generator => "1. Generator",
-                crate::council::CouncilRole::Auditor => "2. Auditor",
-                crate::council::CouncilRole::Synthesizer => "3. Synthesizer",
+                crate::council::CouncilRole::Planner => "1. Planner",
+                crate::council::CouncilRole::Generator => "2. Generator",
+                crate::council::CouncilRole::Auditor => "3. Auditor",
+                crate::council::CouncilRole::Synthesizer => "4. Synthesizer",
                 crate::council::CouncilRole::Custom(ref s) => s.as_str(),
             };
             let stage_title = format!("Stage {} ({})", i + 1, role_name);
@@ -347,18 +348,6 @@ pub fn is_auxiliary_request(body: &[u8]) -> bool {
             }
         }
         if let Some(messages) = json.get("messages").and_then(|m| m.as_array()) {
-            // If the latest message is a tool result, the tool has already executed on disk!
-            if let Some(last_msg) = messages.last() {
-                let role = last_msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
-                if role == "tool" {
-                    return true;
-                }
-                if let Some(content_arr) = last_msg.get("content").and_then(|c| c.as_array()) {
-                    if content_arr.iter().any(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_result")) {
-                        return true;
-                    }
-                }
-            }
 
             for msg in messages {
                 if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {

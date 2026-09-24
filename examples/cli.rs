@@ -1,0 +1,31 @@
+[package]
+name = "swai-core"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+
+[[example]]
+name = "cli"
+path = "examples/cli.rs"
+
+[dependencies]
+config = { version = "0.14", features = ["toml"] }
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+tracing = "0.1"
+tokio = { version = "1", features = ["full"] }
+nix = { version = "0.29", features = ["process", "signal", "fs"] }
+libc = "0.2"
+chrono = "0.4"
+single-instance = "0.3"
+tempfile = "3"
+reqwest = { version = "0.12", features = ["blocking"] }
+serde_json = "1"
+regex = "1"
+keyring = "2"
+zeroize = "1"
+
+# Phase 5: Reverse proxy server
+tiny_http = "0.12"
+dirs = "6.0.0"

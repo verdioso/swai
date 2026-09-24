@@ -62,6 +62,28 @@ mod tests {
         // Empty messages array.
         let empty = br#"{"messages": []}"#;
         assert_eq!(extract_prompt_from_body(empty), None);
+
+        // Multi-turn agentic loop (OpenAI format):
+        let agentic_openai = br#"{"messages": [
+            {"role": "user", "content": "Execute Phase 35.1: Keyring"},
+            {"role": "assistant", "content": null, "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "read_file", "arguments": "{\"path\":\"phase35.md\"}"}}]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "Phase 35.1 details"}
+        ]}"#;
+        let extracted = extract_prompt_from_body(agentic_openai).unwrap();
+        assert!(extracted.contains("Task Goal:\nExecute Phase 35.1: Keyring"));
+        assert!(extracted.contains("read_file({\"path\":\"phase35.md\"})"));
+        assert!(extracted.contains("Phase 35.1 details"));
+
+        // Multi-turn agentic loop (Anthropic format):
+        let agentic_anthropic = br#"{"messages": [
+            {"role": "user", "content": [{"type": "text", "text": "Execute Phase 35.1: Keyring"}]},
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "tu_1", "name": "read_file", "input": {"path": "phase35.md"}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu_1", "content": "Phase 35.1 details"}]}
+        ]}"#;
+        let extracted_anthropic = extract_prompt_from_body(agentic_anthropic).unwrap();
+        assert!(extracted_anthropic.contains("Task Goal:\nExecute Phase 35.1: Keyring"));
+        assert!(extracted_anthropic.contains("read_file"));
+        assert!(extracted_anthropic.contains("Phase 35.1 details"));
     }
 
     #[test]
@@ -193,6 +215,7 @@ mod tests {
         assert!(!crate::proxy::council::is_auxiliary_request(code_req));
 
         let tool_resp = br#"{"messages": [{"role": "user", "content": "Create form.html"}, {"role": "assistant", "content": ""}, {"role": "tool", "content": "File created"}]}"#;
-        assert!(crate::proxy::council::is_auxiliary_request(tool_resp));
+        // Tool responses in agentic loops are NOT auxiliary; they must run through Council
+        assert!(!crate::proxy::council::is_auxiliary_request(tool_resp));
     }
 }

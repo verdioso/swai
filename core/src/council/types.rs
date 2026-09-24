@@ -19,6 +19,7 @@ pub enum CouncilMode {
 /// Role a council agent plays in a pipeline stage.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CouncilRole {
+    Planner,
     Generator,
     Auditor,
     Synthesizer,

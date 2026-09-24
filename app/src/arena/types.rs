@@ -72,6 +72,7 @@ pub enum ArenaStreamAction {
 /// widget share a single source of truth for role names.
 pub fn role_label(role: &swai_core::council::CouncilRole) -> String {
     match role {
+        swai_core::council::CouncilRole::Planner => "Planner".to_string(),
         swai_core::council::CouncilRole::Generator => "Generator".to_string(),
         swai_core::council::CouncilRole::Auditor => "Auditor".to_string(),
         swai_core::council::CouncilRole::Synthesizer => "Synthesizer".to_string(),

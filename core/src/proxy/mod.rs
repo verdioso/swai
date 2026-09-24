@@ -15,12 +15,14 @@ pub mod ollama_generate;
 pub mod ollama_streaming;
 pub mod ollama_types;
 pub mod openai;
+pub mod prompt;
 pub mod router;
 pub mod server;
 pub mod session_tracker;
 pub mod state;
 pub mod streaming;
 pub mod tool_calling;
+pub mod tool_sanitizer;
 #[cfg(test)]
 mod tests_council;
 #[cfg(test)]
