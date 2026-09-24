@@ -156,14 +156,25 @@ pub fn build_synthesizer_prompt(
     draft: &str,
     critiques: &str,
     human_feedback: Option<&str>,
+    directive: Option<&crate::council::planner::PlannerDirective>,
 ) -> String {
     let _ = config; // Reserved for future per-role template overrides.
     let guidance = match human_feedback {
         Some(feedback) => format!("Human guidance (authoritative):\n{feedback}\n\n"),
         None => String::new(),
     };
+    let target_hint = match directive {
+        Some(d) if !d.target.is_empty() || !d.tool.is_empty() => {
+            let tool = if d.tool.is_empty() { "write_file" } else { &d.tool };
+            format!(
+                "Architect Directive:\n- Target: {}\n- Tool: {}\n- Template: {{\"name\": \"{}\", \"arguments\": {{\"path\": \"{}\", \"content\": \"...\"}}}}\n\n",
+                d.target, tool, tool, d.target
+            )
+        }
+        _ => String::new(),
+    };
     format!(
-        "{guidance}You are the Synthesizer. Review the Draft and Audit Critiques against the Original Prompt. Output ONLY the complete, full working final response and code directly. Do NOT repeat or quote the audit critiques or draft text:\n\nOriginal prompt:\n{}\n\nDraft response:\n{}\n\nAudit critiques:\n{}\n\nFinal Output:\n",
+        "{guidance}{target_hint}You are the Synthesizer. Review the Draft and Audit Critiques against the Original Prompt. Output ONLY the complete, full working final response and code directly. Do NOT repeat or quote the audit critiques or draft text:\n\nOriginal prompt:\n{}\n\nDraft response:\n{}\n\nAudit critiques:\n{}\n\nFinal Output:\n",
         input_prompt, draft, critiques
     )
 }
@@ -189,6 +200,7 @@ mod tests {
             "draft text",
             "critique one",
             Some("Please handle edge cases"),
+            None,
         );
         assert!(prompt.starts_with("Human guidance (authoritative):"));
         assert!(prompt.contains("Please handle edge cases"));
@@ -200,7 +212,7 @@ mod tests {
     #[test]
     fn test_build_prompt_without_feedback_is_standard() {
         let config = CouncilPipelineConfig::default();
-        let prompt = build_synthesizer_prompt(&config, "orig", "draft", "critiques", None);
+        let prompt = build_synthesizer_prompt(&config, "orig", "draft", "critiques", None, None);
         assert!(prompt.contains("Original prompt:\norig"));
         assert!(!prompt.contains("Human guidance"));
     }

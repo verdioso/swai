@@ -173,16 +173,42 @@ pub enum DebateOutcome {
     Success {
         final_response: String,
         transcript: DebateTranscript,
+        target: Option<String>,
+        tool: Option<String>,
     },
     /// One or more stages failed; best available draft returned with warnings.
     Partial {
         fallback_response: String,
         warnings: Vec<String>,
         transcript: DebateTranscript,
+        target: Option<String>,
+        tool: Option<String>,
     },
     /// Pipeline aborted due to fatal error (e.g. generator failure with Abort fallback).
     Aborted {
         reason: String,
         transcript: DebateTranscript,
     },
+}
+
+impl DebateOutcome {
+    /// Target file or command determined by Architect / Planner, if any.
+    pub fn target(&self) -> Option<&str> {
+        match self {
+            DebateOutcome::Success { target, .. } | DebateOutcome::Partial { target, .. } => {
+                target.as_deref()
+            }
+            DebateOutcome::Aborted { .. } => None,
+        }
+    }
+
+    /// Tool chosen by Architect / Planner, if any.
+    pub fn tool(&self) -> Option<&str> {
+        match self {
+            DebateOutcome::Success { tool, .. } | DebateOutcome::Partial { tool, .. } => {
+                tool.as_deref()
+            }
+            DebateOutcome::Aborted { .. } => None,
+        }
+    }
 }

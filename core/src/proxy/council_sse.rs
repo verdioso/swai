@@ -62,7 +62,7 @@ pub fn build_council_sse_events(
     };
 
     if is_openai {
-        if let Some(tool_call) = super::tool_calling::extract_tool_call(&final_text, prompt, available_tools) {
+        if let Some(tool_call) = super::tool_calling::extract_tool_call(&final_text, prompt, available_tools, outcome.target()) {
             let initial_chunk = serde_json::json!({
                 "id": "chatcmpl_council",
                 "object": "chat.completion.chunk",
@@ -176,7 +176,7 @@ pub fn build_council_sse_events(
         return events;
     }
 
-    if let Some(tool_call) = super::tool_calling::extract_tool_call(&final_text, prompt, available_tools) {
+    if let Some(tool_call) = super::tool_calling::extract_tool_call(&final_text, prompt, available_tools, outcome.target()) {
         events.push(
             format!(
                 "event: content_block_start\ndata: {{\"type\": \"content_block_start\", \"index\": 0, \"content_block\": {{\"type\": \"tool_use\", \"id\": \"toolu_council_01\", \"name\": \"{}\", \"input\": {{}}}}}}\n\n",

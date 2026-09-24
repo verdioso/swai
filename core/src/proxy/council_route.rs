@@ -146,14 +146,14 @@ pub fn handle_council_request(
 
     if !is_stream {
         let (outcome, _) = run_council_and_record_telemetry(&engine, &prompt, &state_for_council);
-        let final_text = match outcome {
-            DebateOutcome::Success { final_response, .. } => final_response,
-            DebateOutcome::Partial { fallback_response, .. } => fallback_response,
-            DebateOutcome::Aborted { reason, .. } => reason,
+        let final_text = match &outcome {
+            DebateOutcome::Success { final_response, .. } => final_response.clone(),
+            DebateOutcome::Partial { fallback_response, .. } => fallback_response.clone(),
+            DebateOutcome::Aborted { reason, .. } => reason.clone(),
         };
 
         let json_resp = if is_openai {
-            if let Some(tool_call) = super::tool_calling::extract_tool_call(&final_text, &prompt, available_tools.as_deref()) {
+            if let Some(tool_call) = super::tool_calling::extract_tool_call(&final_text, &prompt, available_tools.as_deref(), outcome.target()) {
                 serde_json::json!({
                     "id": "chatcmpl_council",
                     "object": "chat.completion",
@@ -194,7 +194,7 @@ pub fn handle_council_request(
                     "usage": { "prompt_tokens": 50, "completion_tokens": (final_text.len() / 4).max(1), "total_tokens": 50 + (final_text.len() / 4).max(1) }
                 })
             }
-        } else if let Some(tool_call) = super::tool_calling::extract_tool_call(&final_text, &prompt, available_tools.as_deref()) {
+        } else if let Some(tool_call) = super::tool_calling::extract_tool_call(&final_text, &prompt, available_tools.as_deref(), outcome.target()) {
             let input_val: serde_json::Value = serde_json::from_str(&tool_call.arguments).unwrap_or(serde_json::json!({}));
             serde_json::json!({
                 "id": "msg_council",

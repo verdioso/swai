@@ -58,10 +58,11 @@ pub fn build_tool_protocol_instructions(tools: &[Value]) -> String {
         s.push_str(&format!("- {}: {}\n", name, desc));
     }
     s.push_str("\nCRITICAL TOOL-CALLING DIRECTIVES:\n");
-    s.push_str("1. ATOMIC EXECUTION: Execute ONLY ONE tool call per turn. Never combine multiple operations.\n");
-    s.push_str("2. SINGLE-FILE SCOPE: When calling a file editing or writing tool, target EXACTLY ONE file. Never bundle multiple files, dependencies, tests, or scripts into a single call.\n");
-    s.push_str("3. RAW PAYLOAD ONLY: Do not wrap file contents in markdown code fences (```) inside tool arguments.\n");
-    s.push_str("4. NO CONVERSATIONAL PROSE: Emit only the structured tool call without chat filler.\n");
+    s.push_str("1. ATOMIC: Execute ONLY ONE tool call per turn.\n");
+    s.push_str("2. SINGLE-FILE: Target EXACTLY ONE file. Never bundle multiple files.\n");
+    s.push_str("3. RAW PAYLOAD: Do not wrap file contents in markdown code fences inside arguments.\n");
+    s.push_str("4. NO CHAT: Emit only the structured tool call or code without conversational commentary.\n");
+    s.push_str("5. FORMAT: If calling a tool, emit JSON: {\"name\": \"TOOL\", \"arguments\": {\"path\": \"...\", \"content\": \"...\"}}\n");
     s
 }
 
@@ -152,7 +153,12 @@ pub fn find_json_tool_call_candidate(text: &str) -> Option<&str> {
 }
 
 /// Extract tool call from model output text.
-pub fn extract_tool_call(text: &str, prompt: &str, available_tools: Option<&[Value]>) -> Option<ToolCallExtraction> {
+pub fn extract_tool_call(
+    text: &str,
+    prompt: &str,
+    available_tools: Option<&[Value]>,
+    target_override: Option<&str>,
+) -> Option<ToolCallExtraction> {
     let trimmed = text.trim();
 
     // 1. Direct or embedded JSON tool call: {"name": "...", "arguments": ...}
@@ -201,7 +207,7 @@ pub fn extract_tool_call(text: &str, prompt: &str, available_tools: Option<&[Val
         }
     }
 
-    // 3. Fallback: If client provides "Write" / "write_to_file" tool and text contains markdown code
+    // 3. Fallback: If client provides "Write" / "write_to_file" tool and text contains code
     if let Some(tools) = available_tools {
         let write_tool = tools.iter().find(|t| {
             let n = t.get("name").or_else(|| t.get("function").and_then(|f| f.get("name"))).and_then(|n| n.as_str()).unwrap_or("");
@@ -238,39 +244,44 @@ pub fn extract_tool_call(text: &str, prompt: &str, available_tools: Option<&[Val
                 ("file_path", "content")
             };
 
-            if let Some(code_start) = text.find("```") {
-                let after_ticks = &text[code_start + 3..];
-                if let Some(first_line_end) = after_ticks.find('\n') {
-                    let code_body = &after_ticks[first_line_end + 1..];
-                    if let Some(code_end) = code_body.rfind("```") {
-                        let actual_code = code_body[..code_end].trim();
-                        if is_audit_review_text(actual_code) {
-                            return None;
-                        }
-                        let filename_opt = extract_target_from_prompt(prompt)
-                            .or_else(|| extract_target_from_prompt(text))
-                            .or_else(|| extract_filename_hint(text))
-                            .or_else(|| extract_filename_hint(prompt));
-                        if let Some(filename) = filename_opt {
-                            let content_to_write = if let Some(targeted) = crate::proxy::tool_sanitizer::extract_targeted_code_block(text, &filename) {
-                                targeted
-                            } else {
-                                actual_code
-                            };
-                            let mut args_map = serde_json::Map::new();
-                            args_map.insert(path_key.into(), Value::String(filename));
-                            args_map.insert(content_key.into(), Value::String(content_to_write.to_string()));
-                            let raw_args = serde_json::to_string(&args_map).unwrap_or_default();
-                            let sanitized_args = sanitize_tool_call_arguments(tool_name, &raw_args);
-                            return Some(ToolCallExtraction {
-                                name: tool_name.to_string(),
-                                arguments: sanitized_args,
-                            });
-                        }
+            let filename_opt = target_override
+                .map(|s| s.to_string())
+                .or_else(|| extract_target_from_prompt(prompt))
+                .or_else(|| extract_target_from_prompt(text))
+                .or_else(|| extract_filename_hint(text))
+                .or_else(|| extract_filename_hint(prompt));
+
+            if let Some(filename) = filename_opt {
+                let code_opt = if let Some(code_start) = text.find("```") {
+                    let after_ticks = &text[code_start + 3..];
+                    after_ticks.find('\n').and_then(|first_line_end| {
+                        let code_body = &after_ticks[first_line_end + 1..];
+                        code_body.rfind("```").map(|code_end| code_body[..code_end].trim())
+                    })
+                } else if !is_audit_review_text(trimmed) && !trimmed.is_empty() {
+                    Some(trimmed)
+                } else {
+                    None
+                };
+
+                if let Some(actual_code) = code_opt {
+                    if !is_audit_review_text(actual_code) {
+                        let content_to_write = crate::proxy::tool_sanitizer::extract_targeted_code_block(text, &filename)
+                            .unwrap_or(actual_code);
+                        let mut args_map = serde_json::Map::new();
+                        args_map.insert(path_key.into(), Value::String(filename));
+                        args_map.insert(content_key.into(), Value::String(content_to_write.to_string()));
+                        let raw_args = serde_json::to_string(&args_map).unwrap_or_default();
+                        let sanitized_args = sanitize_tool_call_arguments(tool_name, &raw_args);
+                        return Some(ToolCallExtraction {
+                            name: tool_name.to_string(),
+                            arguments: sanitized_args,
+                        });
                     }
                 }
             }
         }
+
 
         // 4. Fallback: If client provides "terminal" or "bash" tool and text contains shell command
         let term_tool = tools.iter().find(|t| {
@@ -316,66 +327,40 @@ pub fn extract_tool_call(text: &str, prompt: &str, available_tools: Option<&[Val
 }
 
 fn is_audit_review_text(s: &str) -> bool {
-    let lower = s.to_lowercase();
-    lower.contains("critical issues:")
-        || lower.contains("audit critiques:")
-        || lower.contains("## critical issues")
-        || lower.contains("review and critique the draft")
+    let l = s.to_lowercase();
+    l.contains("critical issues:") || l.contains("audit critiques:") || l.contains("## critical issues") || l.contains("review and critique")
 }
 
 fn extract_target_from_prompt(prompt: &str) -> Option<String> {
-    for line in prompt.lines() {
-        let t = line.trim();
-        if let Some(target) = t.strip_prefix("- Target:") {
-            let s = target.trim();
-            if !s.is_empty()
-                && (s.contains('.') || s.contains('/'))
-                && !s.contains(' ')
-                && !s.starts_with("PLAN/")
-                && !s.starts_with("plan/")
-            {
-                return Some(s.to_string());
-            }
+    prompt.lines().find_map(|line| {
+        let s = line.trim().strip_prefix("- Target:")?.trim();
+        if !s.is_empty() && (s.contains('.') || s.contains('/')) && !s.contains(' ') && !s.to_lowercase().starts_with("plan/") {
+            Some(s.to_string())
+        } else {
+            None
         }
-    }
-    None
+    })
 }
 
 /// Extract a filename hint like `core/Cargo.toml` or `src/main.rs` from text.
 pub fn extract_filename_hint(text: &str) -> Option<String> {
     let mut specific_path = None;
     let mut general_file = None;
+    let exts = [".html", ".rs", ".js", ".ts", ".py", ".toml", ".json", ".css"];
 
     for word in text.split_whitespace() {
         let clean = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '_' && c != '/' && c != '-');
-        if clean.starts_with("PLAN/") || clean.starts_with("plan/") {
+        if clean.to_lowercase().starts_with("plan/") || clean.starts_with("http") || clean.len() <= 3 {
             continue;
         }
-        if (clean.ends_with(".html")
-            || clean.ends_with(".rs")
-            || clean.ends_with(".js")
-            || clean.ends_with(".ts")
-            || clean.ends_with(".py")
-            || clean.ends_with(".toml")
-            || clean.ends_with(".json")
-            || clean.ends_with(".css"))
-            && !clean.starts_with("http")
-            && clean.len() > 3
-        {
+        if exts.iter().any(|e| clean.ends_with(e)) {
             if clean.contains('/') || clean.contains('\\') {
-                if specific_path.is_none() {
-                    specific_path = Some(clean.to_string());
-                }
-            } else if clean != "config.toml" && clean != "config.json" {
-                if general_file.is_none() {
-                    general_file = Some(clean.to_string());
-                }
+                if specific_path.is_none() { specific_path = Some(clean.to_string()); }
             } else if general_file.is_none() {
                 general_file = Some(clean.to_string());
             }
         }
     }
-
     specific_path.or(general_file)
 }
 
@@ -393,7 +378,7 @@ mod tests {
     #[test]
     fn test_extract_xml_tool_call() {
         let text = "<tool_call>\n<function=Write>\n<parameter=file_path>\nform.html\n</parameter>\n<parameter=content>\n<h1>Test</h1>\n</parameter>\n</tool_call>";
-        let extracted = extract_tool_call(text, "", None).unwrap();
+        let extracted = extract_tool_call(text, "", None, None).unwrap();
         assert_eq!(extracted.name, "Write");
         assert!(extracted.arguments.contains("form.html"));
         assert!(extracted.arguments.contains("<h1>Test</h1>"));
@@ -402,16 +387,26 @@ mod tests {
     #[test]
     fn test_extract_json_tool_call_amidst_rust_and_bash_braces() {
         let text = "echo 'keyring = { version = \"0.8\" }' >> Cargo.toml\nmod tests {\n fn test() {}\n}\n{\"name\": \"write_file\", \"arguments\": {\"content\": \"pub fn save() {}\", \"path\": \"core/src/keyring.rs\"}}\n";
-        let extracted = extract_tool_call(text, "", None).expect("should extract embedded tool call");
+        let extracted = extract_tool_call(text, "", None, None).expect("should extract embedded tool call");
         assert_eq!(extracted.name, "write_file");
         assert!(extracted.arguments.contains("core/src/keyring.rs"));
+    }
+
+    #[test]
+    fn test_extract_tool_call_with_target_override_unfenced() {
+        let tools = vec![serde_json::json!({"name": "write_file", "parameters": {"properties": {"path": {}, "content": {}}}})];
+        let code = "pub fn add(a: i32, b: i32) -> i32 { a + b }";
+        let extracted = extract_tool_call(code, "", Some(&tools), Some("src/math.rs")).unwrap();
+        assert_eq!(extracted.name, "write_file");
+        assert!(extracted.arguments.contains("src/math.rs"));
+        assert!(extracted.arguments.contains("pub fn add"));
     }
 
     #[test]
     fn test_build_tool_protocol_instructions() {
         let tools = vec![serde_json::json!({"name": "write_file", "description": "Writes file"})];
         let protocol = build_tool_protocol_instructions(&tools);
-        assert!(protocol.contains("write_file") && protocol.contains("ATOMIC EXECUTION") && protocol.contains("SINGLE-FILE SCOPE"));
+        assert!(protocol.contains("write_file") && protocol.contains("ATOMIC") && protocol.contains("SINGLE-FILE"));
     }
 
     #[test]

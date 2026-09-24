@@ -109,6 +109,8 @@ pub fn build_scoped_generator_prompt(
     directive: &PlannerDirective,
     original_prompt: &str,
 ) -> String {
+    let tool_name = if directive.tool.is_empty() { "write_file" } else { &directive.tool };
+    let target_name = if directive.target.is_empty() { "target file" } else { &directive.target };
     format!(
         "You are the Generator. You must implement ONLY the following atomic step directed by the Architect:\n\
         - Target: {}\n\
@@ -117,8 +119,11 @@ pub fn build_scoped_generator_prompt(
         - Constraints: {}\n\n\
         Original User Task:\n\
         {}\n\n\
-        CRITICAL DIRECTIVE: Emit ONLY the code/payload for target '{}'. Do NOT touch any other files.",
-        directive.target, directive.tool, directive.action, directive.rules, original_prompt, directive.target
+        CRITICAL DIRECTIVE: Emit ONLY the implementation for target '{}'.\n\
+        Emit either the raw code or the structured JSON tool call:\n\
+        {{\"name\": \"{}\", \"arguments\": {{\"path\": \"{}\", \"content\": \"...\"}}}}\n\
+        Do NOT write tutorial scripts or markdown preambles. Do NOT touch any other files.",
+        target_name, tool_name, directive.action, directive.rules, original_prompt, target_name, tool_name, target_name
     )
 }
 

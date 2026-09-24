@@ -114,6 +114,8 @@ mod tests {
                 "prompt".into(),
                 CouncilPipelineConfig::default(),
             ),
+            target: None,
+            tool: None,
         };
 
         let events = build_council_sse_events(&outcome, "council:debate", "prompt", None, false);
@@ -159,6 +161,8 @@ mod tests {
                 "prompt".into(),
                 CouncilPipelineConfig::default(),
             ),
+            target: None,
+            tool: None,
         };
 
         let events = build_council_sse_events(&outcome, "gpt-4o", "prompt", None, true);

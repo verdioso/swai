@@ -363,6 +363,7 @@ impl<E: Executor> CouncilEngine<E> {
             draft,
             &critiques,
             human_feedback.as_deref(),
+            state.planner_directive.as_ref(),
         );
 
         self.emit(CouncilEvent::StageStarted {
@@ -419,26 +420,20 @@ impl<E: Executor> CouncilEngine<E> {
     }
 
     /// Wait at the human-in-the-loop barrier before the Synthesizer runs.
-    ///
-    /// If a pause controller is present and a pause was requested, block until
-    /// the human resumes (with or without feedback) or aborts. Returns the
-    /// injected human feedback, if any. The gate consumes the decision and
-    /// clears the pause flag atomically, so a later gate will not block again.
     fn await_human_gate(&self) -> Option<String> {
-        let Some(controller) = &self.pause_controller else {
-            return None;
-        };
-        human_feedback::await_human_gate(controller)
+        self.pause_controller.as_ref().and_then(human_feedback::await_human_gate)
     }
 
     fn build_outcome(&self, state: DebateState) -> DebateOutcome {
         if state.aborted {
             return DebateOutcome::Aborted { reason: "pipeline aborted due to stage failure".into(), transcript: state.transcript };
         }
+        let target = state.planner_directive.as_ref().map(|d| d.target.clone()).filter(|s| !s.is_empty());
+        let tool = state.planner_directive.as_ref().map(|d| d.tool.clone()).filter(|s| !s.is_empty());
         match state.draft {
-            Some(resp) if !state.warnings.is_empty() => DebateOutcome::Partial { fallback_response: resp, warnings: state.warnings, transcript: state.transcript },
-            Some(final_response) => DebateOutcome::Success { final_response, transcript: state.transcript },
-            None if !state.warnings.is_empty() => DebateOutcome::Partial { fallback_response: String::new(), warnings: state.warnings, transcript: state.transcript },
+            Some(resp) if !state.warnings.is_empty() => DebateOutcome::Partial { fallback_response: resp, warnings: state.warnings, transcript: state.transcript, target, tool },
+            Some(final_response) => DebateOutcome::Success { final_response, transcript: state.transcript, target, tool },
+            None if !state.warnings.is_empty() => DebateOutcome::Partial { fallback_response: String::new(), warnings: state.warnings, transcript: state.transcript, target, tool },
             _ => DebateOutcome::Aborted { reason: "no response produced".into(), transcript: state.transcript },
         }
     }
