@@ -50,17 +50,80 @@ pub fn build_planner_prompt(input_prompt: &str, tool_protocol: &str) -> String {
     )
 }
 
+/// Find candidate JSON objects with balanced braces in text.
+fn find_balanced_json_candidates(text: &str) -> Vec<&str> {
+    let mut candidates = Vec::new();
+    for (start, ch) in text.char_indices() {
+        if ch == '{' {
+            let slice = &text[start..];
+            let (mut depth, mut in_str, mut escape) = (0, false, false);
+            for (idx, c) in slice.char_indices() {
+                if escape { escape = false; continue; }
+                if c == '\\' { escape = true; continue; }
+                if c == '"' { in_str = !in_str; continue; }
+                if !in_str {
+                    if c == '{' { depth += 1; }
+                    else if c == '}' {
+                        depth -= 1;
+                        if depth == 0 {
+                            candidates.push(&slice[..=idx]);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    candidates
+}
+
 /// Parse the JSON or XML directive emitted by the Planner.
 pub fn parse_planner_directive(output: &str) -> Option<PlannerDirective> {
     let trimmed = output.trim();
     if let Ok(dir) = serde_json::from_str::<PlannerDirective>(trimmed) {
-        return Some(dir);
+        if !dir.target.is_empty() {
+            return Some(dir);
+        }
     }
-    if let Some(start) = output.find('{') {
-        if let Some(end) = output.rfind('}') {
-            if end > start {
-                if let Ok(dir) = serde_json::from_str::<PlannerDirective>(&output[start..=end]) {
-                    return Some(dir);
+    for json_str in find_balanced_json_candidates(output) {
+        if let Ok(dir) = serde_json::from_str::<PlannerDirective>(json_str) {
+            if !dir.target.is_empty() {
+                return Some(dir);
+            }
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
+            let tool = v.get("tool")
+                .or_else(|| v.get("name"))
+                .or_else(|| v.get("function"))
+                .and_then(|val| val.as_str());
+            let args = v.get("arguments").and_then(|a| a.as_object());
+
+            let target = v.get("target")
+                .or_else(|| v.get("path"))
+                .or_else(|| v.get("file"))
+                .or_else(|| v.get("command"))
+                .or_else(|| args.and_then(|a| a.get("target").or_else(|| a.get("path")).or_else(|| a.get("file")).or_else(|| a.get("command"))))
+                .and_then(|val| val.as_str());
+
+            if let Some(t) = tool {
+                if let Some(tgt) = target {
+                    let action = v.get("action")
+                        .or_else(|| v.get("step"))
+                        .or_else(|| v.get("description"))
+                        .or_else(|| args.and_then(|a| a.get("action").or_else(|| a.get("step")).or_else(|| a.get("description"))))
+                        .and_then(|val| val.as_str())
+                        .unwrap_or("Execute tool step");
+                    let rules = v.get("rules")
+                        .or_else(|| v.get("constraints"))
+                        .or_else(|| args.and_then(|a| a.get("rules").or_else(|| a.get("constraints"))))
+                        .and_then(|val| val.as_str())
+                        .unwrap_or("");
+                    return Some(PlannerDirective {
+                        tool: t.to_string(),
+                        target: tgt.to_string(),
+                        action: action.to_string(),
+                        rules: rules.to_string(),
+                    });
                 }
             }
         }
@@ -120,10 +183,10 @@ pub fn build_scoped_generator_prompt(
         Original User Task:\n\
         {}\n\n\
         CRITICAL DIRECTIVE: Emit ONLY the implementation for target '{}'.\n\
-        Emit either the raw code or the structured JSON tool call:\n\
-        {{\"name\": \"{}\", \"arguments\": {{\"path\": \"{}\", \"content\": \"...\"}}}}\n\
-        Do NOT write tutorial scripts or markdown preambles. Do NOT touch any other files.",
-        target_name, tool_name, directive.action, directive.rules, original_prompt, target_name, tool_name, target_name
+        Emit either the raw code or the structured JSON tool call matching the tool schema:\n\
+        {{\"name\": \"{}\", \"arguments\": {{...}}}}\n\
+        Do NOT hallucinate execution history or fake tool results. Do NOT touch any other files.",
+        target_name, tool_name, directive.action, directive.rules, original_prompt, target_name, tool_name
     )
 }
 
@@ -323,5 +386,14 @@ mod tests {
         let tool_call = format_immediate_tool_call(&dir);
         assert!(tool_call.contains("read_file"));
         assert!(tool_call.contains("PLAN/PHASES/phase35.md"));
+    }
+
+    #[test]
+    fn test_parse_planner_directive_nested_args_with_trailing_brace() {
+        let text = "Let me start with council mod.rs\n```json\n{\"name\": \"read_file\", \"arguments\": {\"path\": \"core/src/council/mod.rs\"}}}\n```";
+        let parsed = parse_planner_directive(text).expect("should parse nested tool call with trailing brace");
+        assert_eq!(parsed.tool, "read_file");
+        assert_eq!(parsed.target, "core/src/council/mod.rs");
+        assert!(is_immediate_inspection_directive(&parsed));
     }
 }
