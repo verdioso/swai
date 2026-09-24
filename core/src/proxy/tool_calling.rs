@@ -11,58 +11,55 @@ pub struct ToolCallExtraction {
 }
 
 /// Convert client tool definitions (Anthropic or OpenAI) into OpenAI tool schemas.
+fn is_allowed_coding_tool(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "read_file" | "read" | "write_file" | "write" | "write_to_file" | "create_file"
+            | "patch" | "terminal" | "bash" | "execute_command" | "command"
+            | "search_files" | "search" | "grep" | "glob" | "view_file"
+    )
+}
+
+/// Convert client tool definitions (Anthropic or OpenAI) into OpenAI tool schemas.
 pub fn extract_openai_tools(request_body: &[u8]) -> Option<Vec<Value>> {
     let json: Value = serde_json::from_slice(request_body).ok()?;
     let tools_arr = json.get("tools").and_then(|t| t.as_array())?;
     let mut out = Vec::new();
 
     for t in tools_arr {
+        let name = t.get("name")
+            .or_else(|| t.get("function").and_then(|f| f.get("name")))
+            .and_then(|n| n.as_str())
+            .unwrap_or("");
+        if !is_allowed_coding_tool(name) {
+            continue;
+        }
         if t.get("type").and_then(|s| s.as_str()) == Some("function") {
             out.push(t.clone());
-        } else if let Some(name) = t.get("name").and_then(|n| n.as_str()) {
+        } else if !name.is_empty() {
             let desc = t.get("description").and_then(|d| d.as_str()).unwrap_or("");
             let params = t.get("input_schema").cloned().unwrap_or(serde_json::json!({
-                "type": "object",
-                "properties": {}
+                "type": "object", "properties": {}
             }));
             out.push(serde_json::json!({
                 "type": "function",
-                "function": {
-                    "name": name,
-                    "description": desc,
-                    "parameters": params
-                }
+                "function": { "name": name, "description": desc, "parameters": params }
             }));
         }
     }
 
-    if !out.is_empty() {
-        Some(out)
-    } else {
-        None
-    }
+    if !out.is_empty() { Some(out) } else { None }
 }
 
 /// Generate a strict tool-calling protocol prompt based on available client tools.
 pub fn build_tool_protocol_instructions(tools: &[Value]) -> String {
     let mut s = String::from("You have access to the following tools:\n");
     for t in tools {
-        let name = t.get("name")
-            .or_else(|| t.get("function").and_then(|f| f.get("name")))
-            .and_then(|n| n.as_str())
-            .unwrap_or("unknown");
-        let desc = t.get("description")
-            .or_else(|| t.get("function").and_then(|f| f.get("description")))
-            .and_then(|d| d.as_str())
-            .unwrap_or("");
+        let name = t.get("name").or_else(|| t.get("function").and_then(|f| f.get("name"))).and_then(|n| n.as_str()).unwrap_or("unknown");
+        let desc = t.get("description").or_else(|| t.get("function").and_then(|f| f.get("description"))).and_then(|d| d.as_str()).unwrap_or("");
         s.push_str(&format!("- {}: {}\n", name, desc));
     }
-    s.push_str("\nCRITICAL TOOL-CALLING DIRECTIVES:\n");
-    s.push_str("1. ATOMIC: Execute ONLY ONE tool call per turn.\n");
-    s.push_str("2. SINGLE-FILE: Target EXACTLY ONE file. Never bundle multiple files.\n");
-    s.push_str("3. RAW PAYLOAD: Do not wrap file contents in markdown code fences inside arguments.\n");
-    s.push_str("4. NO CHAT: Emit only the structured tool call or code without conversational commentary.\n");
-    s.push_str("5. FORMAT: If calling a tool, emit JSON: {\"name\": \"TOOL\", \"arguments\": {\"path\": \"...\", \"content\": \"...\"}}\n");
+    s.push_str("\nCRITICAL TOOL-CALLING DIRECTIVES:\n1. ATOMIC: Execute ONLY ONE tool call per turn.\n2. SINGLE-FILE: Target EXACTLY ONE file. Never bundle multiple files.\n3. RAW PAYLOAD: Do not wrap file contents in markdown code fences inside arguments.\n4. NO CHAT: Emit only the structured tool call or code without conversational commentary.\n5. FORMAT: If calling a tool, emit JSON: {\"name\": \"TOOL\", \"arguments\": {\"path\": \"...\", \"content\": \"...\"}}\n");
     s
 }
 
@@ -152,6 +149,15 @@ pub fn find_json_tool_call_candidate(text: &str) -> Option<&str> {
     None
 }
 
+fn is_tool_result_envelope(s: &str) -> bool {
+    let t = s.trim();
+    t.starts_with("{\"success\":")
+        || t.starts_with("{\n  \"success\":")
+        || t.starts_with("{\"error\":")
+        || t.starts_with("{\n  \"error\":")
+        || t.starts_with("{\"total_count\":")
+}
+
 /// Extract tool call from model output text.
 pub fn extract_tool_call(
     text: &str,
@@ -172,6 +178,11 @@ pub fn extract_tool_call(
         if let Ok(val) = serde_json::from_str::<Value>(json_candidate) {
             if let Some(name) = val.get("name").or_else(|| val.get("tool")).and_then(|n| n.as_str()) {
                 if let Some(args) = val.get("arguments").or_else(|| val.get("parameters")) {
+                    if let Some(content_val) = args.get("content").and_then(|c| c.as_str()) {
+                        if is_tool_result_envelope(content_val) {
+                            return None;
+                        }
+                    }
                     let args_str = if args.is_string() {
                         args.as_str().unwrap().to_string()
                     } else {
@@ -223,22 +234,8 @@ pub fn extract_tool_call(
                 .or_else(|| tool_entry.get("function").and_then(|f| f.get("parameters")))
                 .and_then(|p| p.get("properties"))
             {
-                let p = if props.get("path").is_some() {
-                    "path"
-                } else if props.get("filepath").is_some() {
-                    "filepath"
-                } else if props.get("filename").is_some() {
-                    "filename"
-                } else {
-                    "file_path"
-                };
-                let c = if props.get("contents").is_some() {
-                    "contents"
-                } else if props.get("text").is_some() {
-                    "text"
-                } else {
-                    "content"
-                };
+                let p = if props.get("path").is_some() { "path" } else if props.get("filepath").is_some() { "filepath" } else if props.get("filename").is_some() { "filename" } else { "file_path" };
+                let c = if props.get("contents").is_some() { "contents" } else if props.get("text").is_some() { "text" } else { "content" };
                 (p, c)
             } else {
                 ("file_path", "content")
@@ -258,7 +255,7 @@ pub fn extract_tool_call(
                         let code_body = &after_ticks[first_line_end + 1..];
                         code_body.rfind("```").map(|code_end| code_body[..code_end].trim())
                     })
-                } else if !is_audit_review_text(trimmed) && !trimmed.is_empty() {
+                } else if !is_audit_review_text(trimmed) && !is_tool_result_envelope(trimmed) && !trimmed.is_empty() {
                     Some(trimmed)
                 } else {
                     None

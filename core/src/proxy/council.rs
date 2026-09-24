@@ -73,8 +73,8 @@ impl Executor for ProxyExecutor {
         messages.push(serde_json::json!({"role": "user", "content": content}));
 
         let max_tokens = match stage.role {
-            crate::council::CouncilRole::Planner | crate::council::CouncilRole::Auditor => 800,
-            _ => 2048,
+            crate::council::CouncilRole::Planner | crate::council::CouncilRole::Auditor => 3072,
+            _ => 3072,
         };
         let body = serde_json::json!({
             "model": stage.model_id,
@@ -148,8 +148,8 @@ impl Executor for ProxyExecutor {
         messages.push(serde_json::json!({"role": "user", "content": content}));
 
         let max_tokens = match stage.role {
-            crate::council::CouncilRole::Planner | crate::council::CouncilRole::Auditor => 800,
-            _ => 2048,
+            crate::council::CouncilRole::Planner | crate::council::CouncilRole::Auditor => 3072,
+            _ => 3072,
         };
 
         let body = serde_json::json!({
