@@ -11,6 +11,7 @@ pub mod council;
 pub mod health_monitor;
 pub mod import_wizard;
 pub mod ipc;
+pub mod keyring;
 pub mod process_manager;
 pub mod proxy;
 pub mod reconciler;

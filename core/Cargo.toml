@@ -23,6 +23,8 @@ tempfile = "3"
 reqwest = { version = "0.12", features = ["blocking"] }
 serde_json = "1"
 regex = "1"
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+zeroize = { version = "1", features = ["derive"] }
 tiny_http = "0.12"
 dirs = "6.0.0"
 
