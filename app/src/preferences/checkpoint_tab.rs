@@ -1,7 +1,7 @@
 //! SWAI — Checkpointing Preferences Tab.
 //!
-//! Context checkpointing / compaction controls (Phase 24_8 feature).
-//! Phase 31 adds a configurable compaction trigger threshold slider.
+//! Context checkpointing and compaction controls.
+//! Configurable compaction trigger threshold slider.
 
 use gtk::{DropDown, SpinButton, StringList};
 use gtk4 as gtk;

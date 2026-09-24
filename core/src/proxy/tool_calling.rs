@@ -10,13 +10,14 @@ pub struct ToolCallExtraction {
     pub arguments: String,
 }
 
-/// Convert client tool definitions (Anthropic or OpenAI) into OpenAI tool schemas.
+/// Filter client tools so non-coding tools (e.g. text_to_speech) do not pollute the Council prompt.
 fn is_allowed_coding_tool(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
         "read_file" | "read" | "write_file" | "write" | "write_to_file" | "create_file"
-            | "patch" | "terminal" | "bash" | "execute_command" | "command"
-            | "search_files" | "search" | "grep" | "glob" | "view_file"
+            | "edit" | "multiedit" | "replace" | "patch" | "todowrite" | "task"
+            | "terminal" | "bash" | "execute_command" | "command"
+            | "search_files" | "search" | "grep" | "glob" | "view_file" | "view"
     )
 }
 
@@ -59,7 +60,7 @@ pub fn build_tool_protocol_instructions(tools: &[Value]) -> String {
         let desc = t.get("description").or_else(|| t.get("function").and_then(|f| f.get("description"))).and_then(|d| d.as_str()).unwrap_or("");
         s.push_str(&format!("- {}: {}\n", name, desc));
     }
-    s.push_str("\nCRITICAL TOOL-CALLING DIRECTIVES:\n1. ATOMIC: Execute ONLY ONE tool call per turn.\n2. SINGLE-FILE: Target EXACTLY ONE file. Never bundle multiple files.\n3. RAW PAYLOAD: Do not wrap file contents in markdown code fences inside arguments.\n4. NO CHAT: Emit only the structured tool call or code without conversational commentary.\n5. FORMAT: If calling a tool, emit JSON: {\"name\": \"TOOL\", \"arguments\": {\"path\": \"...\", \"content\": \"...\"}}\n");
+    s.push_str("\nCRITICAL TOOL-CALLING DIRECTIVES:\n1. ATOMIC: Execute ONLY ONE tool call per turn.\n2. SINGLE-FILE: Target EXACTLY ONE file. Never bundle multiple files.\n3. RAW PAYLOAD: Do not wrap file contents in markdown code fences inside arguments.\n4. NO CHAT: Emit only the structured tool call or code without conversational commentary.\n5. FORMAT: If calling a tool, emit JSON using the tool's exact schema parameter names: {\"name\": \"TOOL_NAME\", \"arguments\": { ... }}\n");
     s
 }
 
@@ -90,16 +91,13 @@ pub fn inject_tool_discipline_into_config(
     }
 
     for stage in &mut config.stages {
-        match stage.system_prompt {
-            Some(ref mut existing) => {
-                if !existing.contains("CRITICAL TOOL-CALLING DIRECTIVES") {
-                    existing.push_str("\n\n");
-                    existing.push_str(&protocol);
-                }
+        if let Some(ref mut existing) = stage.system_prompt {
+            if !existing.contains("CRITICAL TOOL-CALLING DIRECTIVES") {
+                existing.push_str("\n\n");
+                existing.push_str(&protocol);
             }
-            None => {
-                stage.system_prompt = Some(protocol.clone());
-            }
+        } else {
+            stage.system_prompt = Some(protocol.clone());
         }
     }
 }
@@ -110,40 +108,17 @@ pub fn find_json_tool_call_candidate(text: &str) -> Option<&str> {
     for pat in patterns {
         if let Some(start) = text.find(pat) {
             let slice = &text[start..];
-            let mut depth = 0;
-            let mut end_idx = None;
-            let mut in_str = false;
-            let mut escape = false;
-
+            let (mut depth, mut end_idx, mut in_str, mut escape) = (0, None, false, false);
             for (idx, ch) in slice.char_indices() {
-                if escape {
-                    escape = false;
-                    continue;
-                }
-                if ch == '\\' {
-                    escape = true;
-                    continue;
-                }
-                if ch == '"' {
-                    in_str = !in_str;
-                    continue;
-                }
+                if escape { escape = false; continue; }
+                if ch == '\\' { escape = true; continue; }
+                if ch == '"' { in_str = !in_str; continue; }
                 if !in_str {
-                    if ch == '{' {
-                        depth += 1;
-                    } else if ch == '}' {
-                        depth -= 1;
-                        if depth == 0 {
-                            end_idx = Some(idx);
-                            break;
-                        }
-                    }
+                    if ch == '{' { depth += 1; }
+                    else if ch == '}' { depth -= 1; if depth == 0 { end_idx = Some(idx); break; } }
                 }
             }
-
-            if let Some(end) = end_idx {
-                return Some(&slice[..=end]);
-            }
+            if let Some(end) = end_idx { return Some(&slice[..=end]); }
         }
     }
     None
@@ -151,6 +126,18 @@ pub fn find_json_tool_call_candidate(text: &str) -> Option<&str> {
 
 fn is_tool_result_envelope(s: &str) -> bool {
     let t = s.trim();
+    if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(t) {
+        if map.contains_key("name") || map.contains_key("tool") {
+            return false;
+        }
+        return map.contains_key("success")
+            || map.contains_key("error")
+            || map.contains_key("output")
+            || map.contains_key("stdout")
+            || map.contains_key("stderr")
+            || map.contains_key("total_count")
+            || map.contains_key("bytes_written");
+    }
     t.starts_with("{\"success\":")
         || t.starts_with("{\n  \"success\":")
         || t.starts_with("{\"error\":")
@@ -178,8 +165,12 @@ pub fn extract_tool_call(
         if let Ok(val) = serde_json::from_str::<Value>(json_candidate) {
             if let Some(name) = val.get("name").or_else(|| val.get("tool")).and_then(|n| n.as_str()) {
                 if let Some(args) = val.get("arguments").or_else(|| val.get("parameters")) {
-                    if let Some(content_val) = args.get("content").and_then(|c| c.as_str()) {
-                        if is_tool_result_envelope(content_val) {
+                    let content_val = args.get("content")
+                        .or_else(|| args.get("contents"))
+                        .or_else(|| args.get("text"))
+                        .and_then(|c| c.as_str());
+                    if let Some(c) = content_val {
+                        if is_tool_result_envelope(c) {
                             return None;
                         }
                     }
@@ -210,10 +201,9 @@ pub fn extract_tool_call(
                 }
             }
             let raw_args = serde_json::to_string(&args_map).unwrap_or_default();
-            let sanitized_args = sanitize_tool_call_arguments(func_name.trim(), &raw_args);
             return Some(ToolCallExtraction {
                 name: func_name.trim().to_string(),
-                arguments: sanitized_args,
+                arguments: sanitize_tool_call_arguments(func_name.trim(), &raw_args),
             });
         }
     }
@@ -255,14 +245,14 @@ pub fn extract_tool_call(
                         let code_body = &after_ticks[first_line_end + 1..];
                         code_body.rfind("```").map(|code_end| code_body[..code_end].trim())
                     })
-                } else if !is_audit_review_text(trimmed) && !is_tool_result_envelope(trimmed) && !trimmed.is_empty() {
+                } else if !is_audit_review_text(trimmed) && !trimmed.is_empty() {
                     Some(trimmed)
                 } else {
                     None
                 };
 
                 if let Some(actual_code) = code_opt {
-                    if !is_audit_review_text(actual_code) {
+                    if !is_audit_review_text(actual_code) && !is_tool_result_envelope(actual_code) {
                         let content_to_write = crate::proxy::tool_sanitizer::extract_targeted_code_block(text, &filename)
                             .unwrap_or(actual_code);
                         let mut args_map = serde_json::Map::new();
@@ -428,5 +418,26 @@ mod tests {
     fn test_target_extraction_and_plan_skip() {
         assert_eq!(extract_filename_hint("Follow instructions in PLAN/PHASES/phase35.md"), None);
         assert_eq!(extract_target_from_prompt("Architect:\n- Target: core/Cargo.toml\n"), Some("core/Cargo.toml".into()));
+    }
+
+    #[test]
+    fn test_reject_fenced_tool_result_envelope() {
+        let tools = vec![serde_json::json!({"name": "write_file", "parameters": {"properties": {"path": {}, "content": {}}}})];
+        let fenced = "```json\n{\n  \"success\": false,\n  \"error\": \"Refusing to write\"\n}\n```";
+        assert_eq!(extract_tool_call(fenced, "", Some(&tools), Some("core/Cargo.toml")), None);
+    }
+
+    #[test]
+    fn test_allowed_coding_tool_filter() {
+        let body = serde_json::json!({"tools": [
+            {"type": "function", "function": {"name": "text_to_speech"}},
+            {"type": "function", "function": {"name": "edit"}},
+            {"type": "function", "function": {"name": "write_file"}}
+        ]});
+        let extracted = extract_openai_tools(&serde_json::to_vec(&body).unwrap()).unwrap();
+        assert_eq!(extracted.len(), 2);
+        assert!(extracted.iter().any(|t| t["function"]["name"] == "edit"));
+        assert!(extracted.iter().any(|t| t["function"]["name"] == "write_file"));
+        assert!(!extracted.iter().any(|t| t["function"]["name"] == "text_to_speech"));
     }
 }

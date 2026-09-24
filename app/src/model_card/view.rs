@@ -320,7 +320,7 @@ impl ModelCard {
     /// Called from the main thread (via `glib::MainContext::default().invoke()`)
     /// when a new /slots response is received.
     ///
-    /// Phase 10: Renders context as a 4px GtkProgressBar with 4-tier coloring:
+    /// Renders context as a 4px GtkProgressBar with 4-tier coloring:
     ///   - Green  (#4ade80) for 0–40%
     ///   - Cyan   (#2dd4f0) for 41–75%
     ///   - Orange (#f59e0b) for 76–89%

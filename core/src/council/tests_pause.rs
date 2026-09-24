@@ -1,6 +1,4 @@
-// ---------------------------------------------------------------------------
-// Phase 33.3 — Human-in-the-loop ("Chime In") pause / feedback / resume tests
-// ---------------------------------------------------------------------------
+// Human-in-the-loop ("Chime In") pause / feedback / resume tests
 
 use crate::council::barrier::{CouncilPauseController, PauseDecision};
 use crate::council::pipeline::CouncilEngine;

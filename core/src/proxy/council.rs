@@ -36,6 +36,9 @@ pub fn extract_model_from_body(body: &[u8]) -> Option<String> {
 use crate::proxy::state::ProxyState;
 use std::sync::{Arc, Mutex};
 
+/// Maximum token generation ceiling per Council stage (3072 tokens).
+const COUNCIL_STAGE_MAX_TOKENS: u32 = 3072;
+
 /// Proxy executor that forwards council stages to the primary model backend.
 pub struct ProxyExecutor {
     pub client: Client,
@@ -72,16 +75,12 @@ impl Executor for ProxyExecutor {
         }
         messages.push(serde_json::json!({"role": "user", "content": content}));
 
-        let max_tokens = match stage.role {
-            crate::council::CouncilRole::Planner | crate::council::CouncilRole::Auditor => 3072,
-            _ => 3072,
-        };
         let body = serde_json::json!({
             "model": stage.model_id,
             "messages": messages,
             "temperature": stage.temperature,
             "top_p": stage.top_p,
-            "max_tokens": max_tokens,
+            "max_tokens": COUNCIL_STAGE_MAX_TOKENS,
         });
         let body_str = serde_json::to_string(&body).unwrap_or_default();
         match self
@@ -147,17 +146,12 @@ impl Executor for ProxyExecutor {
         }
         messages.push(serde_json::json!({"role": "user", "content": content}));
 
-        let max_tokens = match stage.role {
-            crate::council::CouncilRole::Planner | crate::council::CouncilRole::Auditor => 3072,
-            _ => 3072,
-        };
-
         let body = serde_json::json!({
             "model": stage.model_id,
             "messages": messages,
             "temperature": stage.temperature,
             "top_p": stage.top_p,
-            "max_tokens": max_tokens,
+            "max_tokens": COUNCIL_STAGE_MAX_TOKENS,
             "stream": true,
         });
         let body_str = serde_json::to_string(&body).unwrap_or_default();

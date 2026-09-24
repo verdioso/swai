@@ -16,8 +16,7 @@
 //! Rc<RefCell<Option<ArenaWindow>>>`. On menu click: if `None`, construct +
 //! subscribe + present and store the handle; if `Some`, call `.present()` to
 //! raise/restore the existing window.
-//!
-//! ## Re-subscribing on a new debate (Option B, chosen for this phase)
+//! ## Re-subscribing on a new debate
 //!
 //! `ProxyState.events_rx` is replaced by the router when a new council debate
 //! begins (see `core/src/proxy/router.rs`). We re-subscribe on every menu
