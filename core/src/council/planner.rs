@@ -268,15 +268,18 @@ pub fn format_immediate_tool_call(dir: &PlannerDirective) -> String {
     }
 
     let mut args = serde_json::Map::new();
-    if tool_name.contains("read") {
+    let lower_tool = tool_name.to_ascii_lowercase();
+    if lower_tool.contains("read") {
         args.insert("path".to_string(), serde_json::Value::String(target.to_string()));
-    } else if tool_name.contains("search") {
+    } else if lower_tool.contains("search") || lower_tool.contains("grep") || lower_tool.contains("find") {
         args.insert("pattern".to_string(), serde_json::Value::String(target.to_string()));
-    } else if tool_name.contains("terminal") || tool_name.contains("run_command") {
+    } else if lower_tool.contains("terminal") || lower_tool.contains("run_command") {
         tool_name = "run_command".into();
         args.insert("CommandLine".to_string(), serde_json::Value::String(target.to_string()));
         args.insert("Cwd".to_string(), serde_json::Value::String(".".to_string()));
         args.insert("WaitMsBeforeAsync".to_string(), serde_json::Value::Number(5000.into()));
+    } else if lower_tool.contains("bash") || lower_tool.contains("execute") || lower_tool.contains("explore") {
+        args.insert("command".to_string(), serde_json::Value::String(target.to_string()));
     } else {
         args.insert("path".to_string(), serde_json::Value::String(target.to_string()));
     }
