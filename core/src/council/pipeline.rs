@@ -139,6 +139,8 @@ impl<E: Executor> CouncilEngine<E> {
         if !state.aborted && !crate::council::planner::should_skip_generation_for_inspection(&mut state) {
             let max_iterations = 3;
             let mut current_iteration = 0;
+            let mut last_approved = false;
+            let mut auditor_ran = false;
 
             while current_iteration < max_iterations && !state.aborted {
                 current_iteration += 1;
@@ -151,20 +153,45 @@ impl<E: Executor> CouncilEngine<E> {
                 }
 
                 // Stage 2: Auditor(s)
+                let audit_count_before = state.audit_results.len();
                 self.run_auditors(&mut state);
                 crate::council::history::save_intermediate(&state.transcript);
 
-                if let Some(last_critique) = state.audit_results.last() {
-                    let approved = crate::council::planner::parse_audit_verdict(last_critique)
-                        .map(|v| v.approved)
-                        .unwrap_or_else(|| {
-                            last_critique.contains("STATUS: APPROVED")
-                                || last_critique.contains("STATUS:APPROVED")
-                        });
-                    if approved {
-                        break;
+                if state.audit_results.len() > audit_count_before {
+                    // Auditor produced a verdict this iteration.
+                    auditor_ran = true;
+                    if let Some(last_critique) = state.audit_results.last() {
+                        let verdict = crate::council::planner::parse_audit_verdict(last_critique);
+                        last_approved = verdict
+                            .map(|v| v.approved)
+                            .unwrap_or_else(|| {
+                                last_critique.contains("STATUS: APPROVED")
+                                    || last_critique.contains("STATUS:APPROVED")
+                            });
+                        if last_approved {
+                            break;
+                        }
                     }
+                } else {
+                    // Auditor stage errored/skipped — treat draft as best-effort and stop looping.
+                    break;
                 }
+            }
+
+            // If an Auditor actually ran and we exhausted all iterations without approval,
+            // abort so the rejected draft is never silently passed back as a "success".
+            if auditor_ran && !last_approved && !state.aborted {
+                let critique_summary = state.audit_results.last()
+                    .and_then(|c| crate::council::planner::parse_audit_verdict(c))
+                    .map(|v| v.critique)
+                    .unwrap_or_else(|| "Auditor did not approve the implementation.".into());
+                state.warnings.push(format!(
+                    "Council pipeline exhausted {} iterations without Auditor approval. Last critique: {}",
+                    max_iterations, critique_summary
+                ));
+                state.aborted = true;
+                // Clear draft so build_outcome returns Aborted, not a rejected draft.
+                state.draft = None;
             }
         }
 
@@ -328,7 +355,12 @@ impl<E: Executor> CouncilEngine<E> {
 
     fn build_outcome(&self, state: DebateState) -> DebateOutcome {
         if state.aborted {
-            return DebateOutcome::Aborted { reason: "pipeline aborted due to stage failure".into(), transcript: state.transcript };
+            let reason = if !state.warnings.is_empty() {
+                state.warnings.join("; ")
+            } else {
+                "pipeline aborted due to stage failure".into()
+            };
+            return DebateOutcome::Aborted { reason, transcript: state.transcript };
         }
         let target = state.planner_directive.as_ref().map(|d| d.target.clone()).filter(|s| !s.is_empty());
         let tool = state.planner_directive.as_ref().map(|d| d.tool.clone()).filter(|s| !s.is_empty());
