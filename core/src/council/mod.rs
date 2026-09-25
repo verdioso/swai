@@ -17,8 +17,6 @@ pub mod vram;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-mod tests_pause;
-#[cfg(test)]
 mod tests_pipeline;
 #[cfg(test)]
 mod tests_sse;

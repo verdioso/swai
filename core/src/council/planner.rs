@@ -28,6 +28,19 @@ impl Default for PlannerDirective {
 
 /// Build the prompt for the Planner (Ornith 35B) to decompose a task.
 pub fn build_planner_prompt(input_prompt: &str, tool_protocol: &str) -> String {
+    let directive = if input_prompt.contains("Execution History & Tool Results:") {
+        "1. If the prompt above contains an \"Execution History & Tool Results\" section, that\n\
+         means earlier atomic steps have already been executed. Read that history carefully\n\
+         and determine the NEXT unexecuted atomic step — do NOT repeat, re-plan, or re-target\n\
+         a step that the history already shows as completed.\n\
+         2. Do NOT write full code or solve all steps now — only the single next step.\n\
+         3. Determine which single file or command must be executed for that step."
+    } else {
+        "1. Break this task down into the FIRST immediate atomic step.\n\
+         2. Do NOT write full code or solve all steps now.\n\
+         3. Determine which single file or command must be executed FIRST."
+    };
+
     format!(
         "You are the Lead Software Architect and Planner in the Council.\n\
         The user has requested the following task:\n\
@@ -36,18 +49,37 @@ pub fn build_planner_prompt(input_prompt: &str, tool_protocol: &str) -> String {
         ---\n\n\
         {}\n\n\
         YOUR ARCHITECTURAL DIRECTIVE:\n\
-        1. Break this task down into the FIRST immediate atomic step.\n\
-        2. Do NOT write full code or solve all steps now.\n\
-        3. Determine which single file or command must be executed FIRST.\n\
+        {}\n\
         4. Output your plan strictly as a JSON object:\n\
         {{\n  \
           \"tool\": \"<target tool name>\",\n  \
           \"target\": \"<single target file or command>\",\n  \
           \"action\": \"<concise description of what to implement in this step>\",\n  \
           \"rules\": \"<specific constraints for this step>\"\n\
-        }}",
-        input_prompt, tool_protocol
+        }}\n\n\
+        CRITICAL DIRECTIVE: You must output ONLY the JSON object and nothing else. Do not output any conversational text before or after the JSON. Stop generating immediately after the closing '}}'.",
+        input_prompt, tool_protocol, directive
     )
+}
+
+/// Verdict emitted by the Auditor.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AuditVerdict {
+    pub approved: bool,
+    pub critique: String,
+}
+
+pub fn parse_audit_verdict(output: &str) -> Option<AuditVerdict> {
+    for json_str in find_balanced_json_candidates(output) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
+            if let Some(status) = v.get("status").and_then(|s| s.as_str()) {
+                let approved = status.eq_ignore_ascii_case("approved");
+                let critique = v.get("critique").and_then(|c| c.as_str()).unwrap_or("").to_string();
+                return Some(AuditVerdict { approved, critique });
+            }
+        }
+    }
+    None
 }
 
 /// Find candidate JSON objects with balanced braces in text.
@@ -98,11 +130,13 @@ pub fn parse_planner_directive(output: &str) -> Option<PlannerDirective> {
                 .and_then(|val| val.as_str());
             let args = v.get("arguments").and_then(|a| a.as_object());
 
-            let target = v.get("target")
+            let target = v.get("glob")
+                .or_else(|| v.get("pattern"))
+                .or_else(|| v.get("target"))
                 .or_else(|| v.get("path"))
                 .or_else(|| v.get("file"))
                 .or_else(|| v.get("command"))
-                .or_else(|| args.and_then(|a| a.get("target").or_else(|| a.get("path")).or_else(|| a.get("file")).or_else(|| a.get("command"))))
+                .or_else(|| args.and_then(|a| a.get("glob").or_else(|| a.get("pattern")).or_else(|| a.get("target")).or_else(|| a.get("path")).or_else(|| a.get("file")).or_else(|| a.get("command"))))
                 .and_then(|val| val.as_str());
 
             if let Some(t) = tool {
@@ -201,6 +235,8 @@ pub fn is_immediate_inspection_directive(dir: &PlannerDirective) -> bool {
         || t == "clarify"
         || t == "skill_view"
         || t == "skills_list"
+        || t == "run_command"
+        || t == "terminal"
     {
         return true;
     }
@@ -232,8 +268,11 @@ pub fn format_immediate_tool_call(dir: &PlannerDirective) -> String {
         args.insert("path".to_string(), serde_json::Value::String(target.to_string()));
     } else if tool_name.contains("search") {
         args.insert("pattern".to_string(), serde_json::Value::String(target.to_string()));
-    } else if tool_name.contains("terminal") {
-        args.insert("command".to_string(), serde_json::Value::String(target.to_string()));
+    } else if tool_name.contains("terminal") || tool_name.contains("run_command") {
+        tool_name = "run_command".into();
+        args.insert("CommandLine".to_string(), serde_json::Value::String(target.to_string()));
+        args.insert("Cwd".to_string(), serde_json::Value::String(".".to_string()));
+        args.insert("WaitMsBeforeAsync".to_string(), serde_json::Value::Number(5000.into()));
     } else {
         args.insert("path".to_string(), serde_json::Value::String(target.to_string()));
     }
@@ -395,5 +434,25 @@ mod tests {
         assert_eq!(parsed.tool, "read_file");
         assert_eq!(parsed.target, "core/src/council/mod.rs");
         assert!(is_immediate_inspection_directive(&parsed));
+    }
+
+    #[test]
+    fn test_planner_prompt_with_execution_history() {
+        let p = build_planner_prompt("Execution History & Tool Results:\ncore/Cargo.toml edited", "");
+        assert!(p.contains("determine the NEXT unexecuted atomic step"));
+        assert!(!p.contains("determine the FIRST immediate atomic step"));
+    }
+
+    #[test]
+    fn test_parse_audit_verdict_approved() {
+        let v = parse_audit_verdict("Critique here\n{\"status\": \"approved\", \"critique\": \"LGTM\"}").unwrap();
+        assert!(v.approved);
+        assert_eq!(v.critique, "LGTM");
+    }
+
+    #[test]
+    fn test_parse_audit_verdict_changes_needed() {
+        let v = parse_audit_verdict("{\"status\": \"changes_needed\", \"critique\": \"bug\"}").unwrap();
+        assert!(!v.approved);
     }
 }

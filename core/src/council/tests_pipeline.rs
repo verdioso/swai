@@ -75,7 +75,7 @@ fn test_execute_single_generator_success() {
 }
 
 #[test]
-fn test_execute_with_auditor_and_synthesizer_success() {
+fn test_execute_with_auditor_loop_success() {
     let config = CouncilPipelineConfig {
         stages: vec![
             PipelineStage {
@@ -94,14 +94,6 @@ fn test_execute_with_auditor_and_synthesizer_success() {
                 top_p: 0.8,
                 system_prompt: None,
             },
-            PipelineStage {
-                model_id: "llama3".into(),
-                role: CouncilRole::Synthesizer,
-                prompt_template: "Synthesize: {input}".into(),
-                temperature: 0.5,
-                top_p: 0.85,
-                system_prompt: None,
-            },
         ],
         ..Default::default()
     };
@@ -110,14 +102,13 @@ fn test_execute_with_auditor_and_synthesizer_success() {
         config,
         MockExecutor::new(vec![
             "Generated draft".into(),
-            "Audit passed".into(),
-            "Final synthesized consensus".into(),
+            "STATUS: APPROVED".into(),
         ]),
     );
 
     match engine.execute("test prompt") {
         DebateOutcome::Success { final_response, .. } => {
-            assert_eq!(final_response, "Final synthesized consensus");
+            assert_eq!(final_response, "Generated draft");
         }
         other => panic!("Expected Success, got {:?}", other),
     }

@@ -100,6 +100,15 @@ pub fn handle_council_request(
     target_port: Option<u16>,
 ) {
     let mut pipeline_config = resolve_pipeline_config(&req, &state);
+    
+    // Inject CLI system instructions (tools, OS rules, skills, etc.)
+    if let Some(cli_system) = super::prompt::extract_system_prompt_from_body(request_body) {
+        if let Some(planner) = pipeline_config.stages.iter_mut().find(|s| s.role == crate::council::CouncilRole::Planner) {
+            let existing = planner.system_prompt.clone().unwrap_or_default();
+            planner.system_prompt = Some(format!("{}\n\n=== CLI ENVIRONMENT / CAPABILITIES ===\n{}", existing, cli_system));
+        }
+    }
+
     let available_tools = super::tool_calling::extract_openai_tools(request_body);
     if let Some(ref tools) = available_tools {
         super::tool_calling::inject_tool_discipline_into_config(&mut pipeline_config, tools);

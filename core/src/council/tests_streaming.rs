@@ -180,7 +180,7 @@ fn test_pipeline_completed_always_emitted() {
     let (events, outcome) = run_with_capture(
         three_stage_config(),
         MockExecutor {
-            output: "final synthesized consensus".into(),
+            output: "STATUS: APPROVED".into(),
         },
         "test prompt",
     );
@@ -200,8 +200,8 @@ fn test_pipeline_completed_always_emitted() {
         .filter(|e| matches!(e, CouncilEvent::PipelineCompleted { .. }))
         .count();
 
-    assert_eq!(starts, 3, "one StageStarted per stage");
-    assert_eq!(completes, 3, "one StageCompleted per stage");
+    assert_eq!(starts, 2, "one StageStarted per stage");
+    assert_eq!(completes, 2, "one StageCompleted per stage");
     assert_eq!(terminal, 1, "exactly one PipelineCompleted");
 
     assert!(matches!(

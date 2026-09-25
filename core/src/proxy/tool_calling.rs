@@ -11,7 +11,7 @@ pub struct ToolCallExtraction {
 }
 
 /// Filter client tools so non-coding tools (e.g. text_to_speech) do not pollute the Council prompt.
-fn is_allowed_coding_tool(name: &str) -> bool {
+pub fn is_allowed_coding_tool(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
         "read_file" | "read" | "write_file" | "write" | "write_to_file" | "create_file"
@@ -91,34 +91,45 @@ pub fn inject_tool_discipline_into_config(
     }
 
     for stage in &mut config.stages {
-        if let Some(ref mut existing) = stage.system_prompt {
-            if !existing.contains("CRITICAL TOOL-CALLING DIRECTIVES") {
-                existing.push_str("\n\n");
-                existing.push_str(&protocol);
+        if stage.role == crate::council::CouncilRole::Planner {
+            if let Some(ref mut existing) = stage.system_prompt {
+                if !existing.contains("CRITICAL TOOL-CALLING DIRECTIVES") {
+                    existing.push_str("\n\n");
+                    existing.push_str(&protocol);
+                }
+            } else {
+                stage.system_prompt = Some(protocol.clone());
             }
-        } else {
-            stage.system_prompt = Some(protocol.clone());
         }
     }
 }
 
-/// Find a JSON tool call object candidate with balanced braces starting with a tool call key.
 pub fn find_json_tool_call_candidate(text: &str) -> Option<&str> {
-    let patterns = ["{\"name\"", "{\n  \"name\"", "{\"tool\"", "{\n  \"tool\"", "{\"function\"", "{ \"name\""];
-    for pat in patterns {
-        if let Some(start) = text.find(pat) {
+    for (start, ch) in text.char_indices() {
+        if ch == '{' {
             let slice = &text[start..];
             let (mut depth, mut end_idx, mut in_str, mut escape) = (0, None, false, false);
-            for (idx, ch) in slice.char_indices() {
+            for (idx, c) in slice.char_indices() {
                 if escape { escape = false; continue; }
-                if ch == '\\' { escape = true; continue; }
-                if ch == '"' { in_str = !in_str; continue; }
+                if c == '\\' { escape = true; continue; }
+                if c == '"' { in_str = !in_str; continue; }
                 if !in_str {
-                    if ch == '{' { depth += 1; }
-                    else if ch == '}' { depth -= 1; if depth == 0 { end_idx = Some(idx); break; } }
+                    if c == '{' { depth += 1; }
+                    else if c == '}' {
+                        depth -= 1;
+                        if depth == 0 {
+                            end_idx = Some(idx);
+                            break;
+                        }
+                    }
                 }
             }
-            if let Some(end) = end_idx { return Some(&slice[..=end]); }
+            if let Some(end) = end_idx {
+                let candidate = &slice[..=end];
+                if candidate.contains("\"name\"") || candidate.contains("\"tool\"") || candidate.contains("\"function\"") {
+                    return Some(candidate);
+                }
+            }
         }
     }
     None
@@ -143,6 +154,48 @@ fn is_tool_result_envelope(s: &str) -> bool {
         || t.starts_with("{\"error\":")
         || t.starts_with("{\n  \"error\":")
         || t.starts_with("{\"total_count\":")
+}
+
+fn remap_arguments_to_schema(name: &str, args_json: String, tools: &[Value]) -> String {
+    let mut args: serde_json::Map<String, Value> = match serde_json::from_str(&args_json) {
+        Ok(Value::Object(m)) => m,
+        _ => return args_json,
+    };
+
+    let tool = tools.iter().find(|t| {
+        let n = t.get("name").or_else(|| t.get("function").and_then(|f| f.get("name"))).and_then(|n| n.as_str()).unwrap_or("");
+        n.eq_ignore_ascii_case(name)
+    });
+
+    if let Some(t) = tool {
+        if let Some(props) = t.get("input_schema")
+            .or_else(|| t.get("parameters"))
+            .or_else(|| t.get("function").and_then(|f| f.get("parameters")))
+            .and_then(|p| p.get("properties"))
+            .and_then(|p| p.as_object())
+        {
+            // Remap 'path' to 'file_path' if the tool expects 'file_path' but we have 'path'
+            if props.contains_key("file_path") && !props.contains_key("path") {
+                if let Some(val) = args.remove("path") {
+                    args.insert("file_path".to_string(), val);
+                }
+            }
+            // Remap 'file_path' to 'path' if the tool expects 'path' but we have 'file_path'
+            if props.contains_key("path") && !props.contains_key("file_path") {
+                if let Some(val) = args.remove("file_path") {
+                    args.insert("path".to_string(), val);
+                }
+            }
+            // Remap target paths for Aider 'filepath'
+            if props.contains_key("filepath") && !props.contains_key("path") {
+                if let Some(val) = args.remove("path").or_else(|| args.remove("file_path")) {
+                    args.insert("filepath".to_string(), val);
+                }
+            }
+        }
+    }
+
+    serde_json::to_string(&args).unwrap_or(args_json)
 }
 
 /// Extract tool call from model output text.
@@ -179,7 +232,10 @@ pub fn extract_tool_call(
                     } else {
                         args.to_string()
                     };
-                    let sanitized_args = sanitize_tool_call_arguments(name, &args_str);
+                    let mut sanitized_args = sanitize_tool_call_arguments(name, &args_str);
+                    if let Some(tools) = available_tools {
+                        sanitized_args = remap_arguments_to_schema(name, sanitized_args, tools);
+                    }
                     return Some(ToolCallExtraction {
                         name: name.to_string(),
                         arguments: sanitized_args,
@@ -201,9 +257,13 @@ pub fn extract_tool_call(
                 }
             }
             let raw_args = serde_json::to_string(&args_map).unwrap_or_default();
+            let mut sanitized_args = sanitize_tool_call_arguments(func_name.trim(), &raw_args);
+            if let Some(tools) = available_tools {
+                sanitized_args = remap_arguments_to_schema(func_name.trim(), sanitized_args, tools);
+            }
             return Some(ToolCallExtraction {
                 name: func_name.trim().to_string(),
-                arguments: sanitize_tool_call_arguments(func_name.trim(), &raw_args),
+                arguments: sanitized_args,
             });
         }
     }
@@ -212,7 +272,7 @@ pub fn extract_tool_call(
     if let Some(tools) = available_tools {
         let write_tool = tools.iter().find(|t| {
             let n = t.get("name").or_else(|| t.get("function").and_then(|f| f.get("name"))).and_then(|n| n.as_str()).unwrap_or("");
-            matches!(n.to_ascii_lowercase().as_str(), "write" | "write_to_file" | "write_file" | "create_file" | "save_file")
+            matches!(n.to_ascii_lowercase().as_str(), "write" | "write_to_file" | "write_file" | "create_file" | "save_file" | "replace" | "replace_file" | "replace_file_content" | "edit_file" | "edit")
         });
 
         if let Some(tool_entry) = write_tool {
@@ -224,8 +284,8 @@ pub fn extract_tool_call(
                 .or_else(|| tool_entry.get("function").and_then(|f| f.get("parameters")))
                 .and_then(|p| p.get("properties"))
             {
-                let p = if props.get("path").is_some() { "path" } else if props.get("filepath").is_some() { "filepath" } else if props.get("filename").is_some() { "filename" } else { "file_path" };
-                let c = if props.get("contents").is_some() { "contents" } else if props.get("text").is_some() { "text" } else { "content" };
+                let p = if props.get("path").is_some() { "path" } else if props.get("TargetFile").is_some() { "TargetFile" } else if props.get("filepath").is_some() { "filepath" } else if props.get("filename").is_some() { "filename" } else { "file_path" };
+                let c = if props.get("contents").is_some() { "contents" } else if props.get("CodeContent").is_some() { "CodeContent" } else if props.get("ReplacementContent").is_some() { "ReplacementContent" } else if props.get("text").is_some() { "text" } else { "content" };
                 (p, c)
             } else {
                 ("file_path", "content")
@@ -258,6 +318,21 @@ pub fn extract_tool_call(
                         let mut args_map = serde_json::Map::new();
                         args_map.insert(path_key.into(), Value::String(filename));
                         args_map.insert(content_key.into(), Value::String(content_to_write.to_string()));
+
+                        if let Some(props) = tool_entry
+                            .get("input_schema")
+                            .or_else(|| tool_entry.get("parameters"))
+                            .or_else(|| tool_entry.get("function").and_then(|f| f.get("parameters")))
+                            .and_then(|p| p.get("properties"))
+                        {
+                            if props.get("Overwrite").is_some() {
+                                args_map.insert("Overwrite".to_string(), Value::Bool(true));
+                            }
+                            if props.get("Description").is_some() {
+                                args_map.insert("Description".to_string(), Value::String("Updated by SWAI Council".to_string()));
+                            }
+                        }
+
                         let raw_args = serde_json::to_string(&args_map).unwrap_or_default();
                         let sanitized_args = sanitize_tool_call_arguments(tool_name, &raw_args);
                         return Some(ToolCallExtraction {
@@ -410,8 +485,12 @@ mod tests {
         inject_tool_discipline_into_config(&mut config, &tools);
         assert_eq!(config.stages.len(), 2);
         assert_eq!(config.stages[0].role, crate::council::CouncilRole::Planner);
-        let sys = config.stages[1].system_prompt.as_ref().unwrap();
-        assert!(sys.contains("Base system prompt") && sys.contains("write_file"));
+        let sys = config.stages[0].system_prompt.as_ref().unwrap();
+        assert!(sys.contains("write_file") && sys.contains("CRITICAL TOOL-CALLING DIRECTIVES"));
+        
+        let gen_sys = config.stages[1].system_prompt.as_ref().unwrap();
+        assert!(gen_sys.contains("Base system prompt"));
+        assert!(!gen_sys.contains("CRITICAL TOOL-CALLING DIRECTIVES"));
     }
 
     #[test]

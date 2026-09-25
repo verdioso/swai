@@ -476,7 +476,31 @@ This is the final phase of the Linux v1 development cycle. Per MASTER_PLAN.md, t
 - **Dependency audit**: Confirmed `atty` (RUSTSEC-2021-0145) is a transitive build-time-only dependency via `clap → dbus-codegen → ksni`; no action needed.
 - **File permissions**: Log files in `core/src/process_manager.rs::open_log_file()` now explicitly set `0o600` permissions via `OpenOptionsExt::mode()` and `PermissionsExt::from_mode()`.
 - **Redundant fetch merge**: Replaced separate `check_health()` + `get_loading_progress()` calls with a single `fetch_model_info()` method that returns `(is_healthy, model_id)` from one `/v1/models` request. Updated both `wait_until_ready()` and `wait_until_ready_with_updates()` to use the merged method.
-- All 33 tests pass cleanly.
+## Phase 35.1 — Secure Keyring Storage
+
+### What was built
+
+1. **`swai-core::keyring` module** (`core/src/keyring.rs`):
+   - Implemented `save_key`, `load_key`, and `delete_key` using the `keyring` crate v3.6.3.
+   - Saves secrets to the OS credential store (Secret Service / KWallet on Linux) under the "swai" service name.
+   - Enforces memory zeroization by returning `Zeroizing<String>` on load, and auto-zeroizing the temporary buffer on save.
+   - Clean error mapping via `KeyringError`, converting `keyring::Error::NoEntry` to `KeyringError::NotFound`.
+
+2. **Council Pipeline Hardening** (`core/src/proxy/council.rs` & `tool_calling.rs`):
+   - **Fixed truncation**: Bumped `COUNCIL_STAGE_MAX_TOKENS` from 800 to 3072 to prevent the Planner/Auditor from getting cut off mid-thought.
+   - **Tool Allowlist**: Implemented `is_allowed_coding_tool` to aggressively filter non-coding tools (e.g. `text_to_speech`) from the Council's context, preventing hallucinated API calls.
+   - **JSON Envelope Rejection**: Hardened `is_tool_result_envelope` with a full JSON parse to detect when a model mistakenly tries to write tool result envelopes (e.g., `{"success": false, ...}`) back to disk as file content.
+   - **Strict Target Binding**: Updated Directive #5 to force models to use the exact argument names from the tool's schema, fixing issues where the Synthesizer used hallucinated args like `path`/`content` instead of `command`.
+
+### Architecture decisions
+- **Keyring v3.6.3**: Specifically targeted over v4 to match the stable Secret Service bindings without pulling in unnecessary async runtime requirements into the synchronous CLI pipeline.
+- **`Zeroizing<String>` over `SecretString`**: Used the `zeroize` crate directly for more explicit control over memory clearing boundaries.
+- **Tool Discipline Overrides**: Tool allowlisting and parameter discipline are injected directly into the proxy stream, catching model mistakes before they hit the underlying tool executor.
+
+### Test results
+- 353 tests passing (349 unit + 4 integration, including a new `#[ignore]` real-backend keyring round-trip test).
+- Regression tests added for JSON envelope rejection and tool allowlisting.
+- Clean `cargo check --all-targets` and `cargo fmt`.
 
 ## Phase 11.1 — Manage Models Dialog UI
 
@@ -1985,3 +2009,24 @@ Real-time token streaming and live stage card updates in the GTK4 Debate Arena (
 
 
 
+## Phase (Council Hotfix) — Planner Step-Advancement & Robust Audit Approval Gate
+
+### What was fixed
+
+1. **Bug A (Planner Stuck in Loop):**
+   - Modified `build_planner_prompt` in `core/src/council/planner.rs`.
+   - The directive now correctly branches: if `input_prompt` contains "Execution History & Tool Results:", the Planner is instructed to find the NEXT unexecuted atomic step rather than repeatedly finding the FIRST immediate step. Added unit tests to verify prompt string generation based on history presence.
+
+2. **Bug B (Fragile Audit Loop Exit):**
+   - Modified Auditor prompt in `core/src/council/pipeline.rs` to request a structured JSON critique containing `{"status": "approved", "critique": "..."}` or `{"status": "changes_needed", "critique": "..."}`.
+   - Replaced literal substring-matching (e.g. `STATUS: APPROVED`) with robust JSON extraction and parsing (`AuditVerdict`) via `parse_audit_verdict` inside `planner.rs`.
+   - The structured JSON check takes priority, with the old substring check retained strictly as a fallback. Added unit tests for parsing valid and invalid JSON.
+
+3. **Item C (Synthesizer & Pause Gate Removal Confirmation):**
+   - Explicitly confirmed the removal of the `Synthesizer` stage and the human-in-the-loop pause gate (`CouncilPauseController`) from `core/src/council/pipeline.rs` as a deliberate design simplification.
+   - Cleaned up stale doc comments in `pipeline.rs` referencing the Synthesizer and pause controllers.
+   - *Note: While removed for now, the "Chime In" pause capability was acknowledged as a valuable feature for autonomous multi-step agents and may return in a future dedicated phase rather than being bundled into this bug fix.*
+
+### Test results
+- `cargo check --workspace` passes cleanly.
+- `SWAI_NO_SINGLE_INSTANCE=1 cargo test --workspace -- --test-threads=1` passes successfully, including the new planner and auditor unit tests.

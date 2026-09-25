@@ -126,6 +126,20 @@ pub fn handle_proxy_request(mut req: Request, state: Arc<Mutex<ProxyState>>, cli
     if path_and_query.contains("/v1/messages") && method_str == "POST" {
         if let Ok(mut j) = serde_json::from_slice::<serde_json::Value>(&request_body) {
             process_anthropic_payload(&mut j, request_body_len, &state, target_port);
+            
+            // Filter non-coding tools to prevent llama-server grammar generation from overflowing
+            if let Some(obj) = j.as_object_mut() {
+                if let Some(serde_json::Value::Array(tools)) = obj.get_mut("tools") {
+                    tools.retain(|t| {
+                        let name = t.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                        crate::proxy::tool_calling::is_allowed_coding_tool(name)
+                    });
+                    if tools.is_empty() {
+                        obj.remove("tools");
+                    }
+                }
+            }
+
             if let Ok(s) = serde_json::to_vec(&j) { request_body = s; }
         }
     }

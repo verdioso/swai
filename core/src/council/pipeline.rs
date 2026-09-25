@@ -1,6 +1,6 @@
 //! SWAI — Council multi-turn debate execution engine.
 //!
-//! Coordinates the Generator -> Auditor(s) -> Synthesizer workflow with
+//! Coordinates the Generator -> Auditor(s) workflow with
 //! failure-matrix resilience: graceful fallback to the best available
 //! draft when any stage times out or errors, and support for both
 //! concurrent (parallel) and sequential (fast process-swap < 500 ms)
@@ -11,7 +11,6 @@
 //! observe live progress. Emission order is strictly:
 //! `StageStarted` -> `TokenChunk`(s) -> `StageCompleted` -> `PipelineCompleted`.
 
-use crate::council::barrier::CouncilPauseController;
 use crate::council::events::CouncilEvent;
 use crate::council::types::{
     CouncilPipelineConfig, CouncilRole, DebateOutcome, DebateTranscript, FallbackAction,
@@ -75,9 +74,6 @@ pub struct CouncilEngine<E: Executor> {
     pub config: CouncilPipelineConfig,
     pub executor: E,
     events: Option<tokio::sync::broadcast::Sender<CouncilEvent>>,
-    /// Shared human-in-the-loop pause barrier. When `Some`, the pipeline
-    /// pauses before executing the Synthesizer stage unless the human resumes.
-    pause_controller: Option<CouncilPauseController>,
 }
 
 impl<E: Executor> CouncilEngine<E> {
@@ -86,7 +82,6 @@ impl<E: Executor> CouncilEngine<E> {
             config,
             executor,
             events: None,
-            pause_controller: None,
         }
     }
 
@@ -100,21 +95,7 @@ impl<E: Executor> CouncilEngine<E> {
             config,
             executor,
             events: Some(events),
-            pause_controller: None,
         }
-    }
-
-    /// Enable human-in-the-loop interruption. When set, the pipeline pauses
-    /// before the Synthesizer stage (if a pause is requested) and injects any
-    /// human feedback into the synthesizer prompt.
-    pub fn with_pause_controller(mut self, controller: CouncilPauseController) -> Self {
-        self.pause_controller = Some(controller);
-        self
-    }
-
-    /// The pause controller for this engine, if human-in-the-loop mode is on.
-    pub fn pause_controller(&self) -> Option<&CouncilPauseController> {
-        self.pause_controller.as_ref()
     }
 
     /// Forward an event to every active subscriber. A disconnected
@@ -156,16 +137,34 @@ impl<E: Executor> CouncilEngine<E> {
         crate::council::history::save_intermediate(&state.transcript);
 
         if !state.aborted && !crate::council::planner::should_skip_generation_for_inspection(&mut state) {
-            // Stage 1: Generator (first stage with role Generator or first stage)
-            self.run_generator(&mut state);
-            crate::council::history::save_intermediate(&state.transcript);
-            if !state.aborted {
+            let max_iterations = 3;
+            let mut current_iteration = 0;
+
+            while current_iteration < max_iterations && !state.aborted {
+                current_iteration += 1;
+
+                // Stage 1: Generator
+                self.run_generator(&mut state, current_iteration);
+                crate::council::history::save_intermediate(&state.transcript);
+                if state.aborted {
+                    break;
+                }
+
                 // Stage 2: Auditor(s)
                 self.run_auditors(&mut state);
                 crate::council::history::save_intermediate(&state.transcript);
-                // Stage 3: Synthesizer
-                self.run_synthesizer(&mut state);
-                crate::council::history::save_intermediate(&state.transcript);
+
+                if let Some(last_critique) = state.audit_results.last() {
+                    let approved = crate::council::planner::parse_audit_verdict(last_critique)
+                        .map(|v| v.approved)
+                        .unwrap_or_else(|| {
+                            last_critique.contains("STATUS: APPROVED")
+                                || last_critique.contains("STATUS:APPROVED")
+                        });
+                    if approved {
+                        break;
+                    }
+                }
             }
         }
 
@@ -185,7 +184,7 @@ impl<E: Executor> CouncilEngine<E> {
         outcome
     }
 
-    fn run_generator(&self, state: &mut DebateState) {
+    fn run_generator(&self, state: &mut DebateState, _iteration: usize) {
         let (stage, stage_index) = {
             let stages = &self.config.stages;
             match stages.iter().position(|s| s.role == CouncilRole::Generator) {
@@ -194,11 +193,24 @@ impl<E: Executor> CouncilEngine<E> {
             }
         };
 
-        let scoped_input = if let Some(ref dir) = state.planner_directive {
+        let mut scoped_input = if let Some(ref dir) = state.planner_directive {
             crate::council::planner::build_scoped_generator_prompt(dir, &state.transcript.input_prompt)
         } else {
             state.transcript.input_prompt.clone()
         };
+
+        if let Some(last_critique) = state.audit_results.last() {
+            scoped_input = format!(
+                "{}\n\nAuditor Feedback / Required Fixes from previous iteration:\n{}\n\nPlease update the implementation to address the above feedback. ONLY output pure code inside markdown blocks (e.g., ```rust\n...\n```). Do not output JSON.",
+                scoped_input,
+                last_critique
+            );
+        } else {
+            scoped_input = format!(
+                "{}\n\nPlease output the pure code implementation inside markdown blocks (e.g., ```rust\n...\n```). Do not wrap your response in JSON.",
+                scoped_input
+            );
+        }
         let start = Instant::now();
 
         self.emit(CouncilEvent::StageStarted {
@@ -252,7 +264,7 @@ impl<E: Executor> CouncilEngine<E> {
 
         let draft = state.draft.as_ref().unwrap().clone();
         let prompt = format!(
-            "Review and critique the following draft implementation for any bugs, missing requirements, or improvements. (Note: The Generator produces the implementation; file creation on disk is handled automatically by the system. Critique the technical implementation, correctness, and code completeness):\n\nOriginal prompt:\n{}\n\nDraft to audit:\n{draft}\n\nProvide constructive technical critiques and suggested improvements:",
+            "Review and critique the following draft implementation for any bugs, missing requirements, or improvements. (Note: The Generator produces the implementation; file creation on disk is handled automatically by the system. Critique the technical implementation, correctness, and code completeness):\n\nOriginal prompt:\n{}\n\nDraft to audit:\n{draft}\n\nProvide constructive technical critiques and suggested improvements. Then output a JSON object on its own line, after your critique, in exactly this shape:\n{{\"status\": \"approved\", \"critique\": \"<one-line summary>\"}}\nor\n{{\"status\": \"changes_needed\", \"critique\": \"<what must change>\"}}",
             state.transcript.input_prompt
         );
 
@@ -310,118 +322,6 @@ impl<E: Executor> CouncilEngine<E> {
                 }
             }
         }
-    }
-
-    fn run_synthesizer(&self, state: &mut DebateState) {
-        let (stage, stage_index) = match self
-            .config
-            .stages
-            .iter()
-            .enumerate()
-            .find(|(_, s)| s.role == CouncilRole::Synthesizer)
-        {
-            Some((idx, s)) => (s, idx),
-            None => return,
-        };
-        if state.aborted {
-            return;
-        }
-
-        let draft = state.draft.as_deref().unwrap_or("");
-        let critiques = if state.audit_results.is_empty() {
-            "No audit critiques.".to_string()
-        } else {
-            state.audit_results.join("\n\n---\n\n")
-        };
-
-        // Human-in-the-loop gate: pause before the Synthesizer stage if the
-        // user has "Chimed In". Block until they resume (optionally with
-        // feedback). Any injected guidance becomes an authoritative turn in
-        // the transcript and is prepended to the prompt.
-        let human_feedback = self.await_human_gate().or_else(|| self.executor.take_human_feedback());
-        if let Some(ref fb) = human_feedback {
-            let trimmed = fb.trim().trim_end_matches(['.', '!', '?']).to_lowercase();
-            if matches!(trimmed.as_str(), "stop" | "cancel" | "abort" | "halt" | "exit" | "quit" | "please stop") {
-                state.aborted = true;
-                self.emit(CouncilEvent::HumanIntervention { stage_index, feedback: fb.clone() });
-                state.transcript.append_turn(TurnResult {
-                    turn_index: state.transcript.turns.len(),
-                    role: CouncilRole::Custom("Human Intervention".into()),
-                    model_id: "human".into(),
-                    output: "⏹ Debate stopped by human operator.".into(),
-                    duration: std::time::Duration::ZERO,
-                    error: None,
-                });
-                return;
-            }
-            self.emit(CouncilEvent::HumanIntervention { stage_index, feedback: fb.clone() });
-        }
-
-        let prompt = human_feedback::build_synthesizer_prompt(
-            &self.config,
-            &state.transcript.input_prompt,
-            draft,
-            &critiques,
-            human_feedback.as_deref(),
-            state.planner_directive.as_ref(),
-        );
-
-        self.emit(CouncilEvent::StageStarted {
-            stage_index,
-            role: stage.role.clone(),
-            model_id: stage.model_id.clone(),
-            model_name: stage.model_id.clone(),
-        });
-
-        let start = Instant::now();
-        match self
-            .executor
-            .execute_stream(stage, &prompt, stage_index, &|event| {
-                self.emit(event.clone())
-            }) {
-            Ok(output) => {
-                let dur = start.elapsed();
-                self.emit(CouncilEvent::StageCompleted {
-                    stage_index,
-                    full_text: output.clone(),
-                    duration_sec: dur.as_secs_f64(),
-                    tok_per_sec: 0.0,
-                });
-                state.draft = Some(output.clone());
-                // Record the human intervention as an authoritative turn so it
-                // appears with a distinct badge in the transcript.
-                if let Some(feedback) = &human_feedback {
-                    state.transcript.append_turn(TurnResult {
-                        turn_index: state.transcript.turns.len(),
-                        role: CouncilRole::Custom("Human Intervention".into()),
-                        model_id: "human".into(),
-                        output: feedback.clone(),
-                        duration: std::time::Duration::ZERO,
-                        error: None,
-                    });
-                }
-                state.transcript.append_turn(TurnResult {
-                    turn_index: state.transcript.turns.len(),
-                    role: CouncilRole::Synthesizer,
-                    model_id: stage.model_id.clone(),
-                    output,
-                    duration: dur,
-                    error: None,
-                });
-            }
-            Err(err) => {
-                self.emit(CouncilEvent::PipelineFailed {
-                    stage_index,
-                    error: err.clone(),
-                });
-                state.handle_failure(&self.config.fallback, state.transcript.turns.len(), &err);
-            }
-        }
-    }
-
-    /// Wait at the human-in-the-loop barrier before the Synthesizer runs.
-    fn await_human_gate(&self) -> Option<String> {
-        self.pause_controller.as_ref().and_then(human_feedback::await_human_gate)
     }
 
     fn build_outcome(&self, state: DebateState) -> DebateOutcome {

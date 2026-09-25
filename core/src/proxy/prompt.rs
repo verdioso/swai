@@ -60,6 +60,42 @@ fn truncate_tool_str(s: &str, max_chars: usize) -> String {
     }
 }
 
+pub fn extract_system_prompt_from_body(body: &[u8]) -> Option<String> {
+    let json_val = serde_json::from_slice::<serde_json::Value>(body).ok()?;
+    let messages = json_val.get("messages").and_then(|m| m.as_array())?;
+    
+    // First try to find a message with role == "system"
+    for msg in messages {
+        if msg.get("role").and_then(|r| r.as_str()) == Some("system") {
+            if let Some(text) = extract_message_text(msg) {
+                return Some(text);
+            }
+        }
+    }
+    
+    // Fallback: Claude/Anthropic APIs sometimes place the system prompt at the top level
+    if let Some(sys) = json_val.get("system") {
+        if let Some(s) = sys.as_str() {
+            return Some(s.to_string());
+        }
+        if let Some(arr) = sys.as_array() {
+            let mut out = String::new();
+            for block in arr {
+                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                    out.push_str(text);
+                    out.push('\n');
+                }
+            }
+            let trimmed = out.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+
+    None
+}
+
 /// Extract the user's prompt or multi-turn agentic context from a chat completions JSON body.
 pub fn extract_prompt_from_body(body: &[u8]) -> Option<String> {
     let json_val = serde_json::from_slice::<serde_json::Value>(body).ok()?;
