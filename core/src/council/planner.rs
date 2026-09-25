@@ -237,6 +237,10 @@ pub fn is_immediate_inspection_directive(dir: &PlannerDirective) -> bool {
         || t == "skills_list"
         || t == "run_command"
         || t == "terminal"
+        || t == "explore"
+        || t == "bash"
+        || t == "bash_command"
+        || t == "execute_command"
     {
         return true;
     }

@@ -349,6 +349,9 @@ pub fn is_auxiliary_request(body: &[u8]) -> bool {
                     if lower.contains("title") && msg.get("role").and_then(|r| r.as_str()) == Some("system") {
                         return true;
                     }
+                    if (lower.contains("write the title") || lower.contains("<session>")) && msg.get("role").and_then(|r| r.as_str()) == Some("user") {
+                        return true;
+                    }
                 }
             }
         }

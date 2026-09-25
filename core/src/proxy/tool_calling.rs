@@ -272,7 +272,16 @@ pub fn extract_tool_call(
     if let Some(tools) = available_tools {
         let write_tool = tools.iter().find(|t| {
             let n = t.get("name").or_else(|| t.get("function").and_then(|f| f.get("name"))).and_then(|n| n.as_str()).unwrap_or("");
-            matches!(n.to_ascii_lowercase().as_str(), "write" | "write_to_file" | "write_file" | "create_file" | "save_file" | "replace" | "replace_file" | "replace_file_content" | "edit_file" | "edit")
+            let is_write_name = matches!(n.to_ascii_lowercase().as_str(), "write" | "write_to_file" | "write_file" | "create_file" | "save_file" | "replace" | "replace_file" | "replace_file_content" | "edit_file" | "edit");
+            
+            // Do not use this generic whole-file fallback for tools that require surgical string replacements
+            let is_surgical = t.get("input_schema")
+                .or_else(|| t.get("parameters"))
+                .or_else(|| t.get("function").and_then(|f| f.get("parameters")))
+                .and_then(|p| p.get("properties"))
+                .map_or(false, |props| props.get("old_string").is_some() || props.get("TargetContent").is_some());
+                
+            is_write_name && !is_surgical
         });
 
         if let Some(tool_entry) = write_tool {

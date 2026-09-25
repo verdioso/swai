@@ -263,9 +263,11 @@ impl<E: Executor> CouncilEngine<E> {
         }
 
         let draft = state.draft.as_ref().unwrap().clone();
+        let directive_str = state.planner_directive.as_ref().map(|d| format!("Architect's Atomic Step:\n- Tool: {}\n- Target: {}\n- Action: {}\n- Constraints: {}", d.tool, d.target, d.action, d.rules)).unwrap_or_else(|| "No specific plan provided.".into());
+
         let prompt = format!(
-            "Review and critique the following draft implementation for any bugs, missing requirements, or improvements. (Note: The Generator produces the implementation; file creation on disk is handled automatically by the system. Critique the technical implementation, correctness, and code completeness):\n\nOriginal prompt:\n{}\n\nDraft to audit:\n{draft}\n\nProvide constructive technical critiques and suggested improvements. Then output a JSON object on its own line, after your critique, in exactly this shape:\n{{\"status\": \"approved\", \"critique\": \"<one-line summary>\"}}\nor\n{{\"status\": \"changes_needed\", \"critique\": \"<what must change>\"}}",
-            state.transcript.input_prompt
+            "Review and critique the following draft implementation for any bugs, missing requirements, or improvements. (Note: The Generator produces the implementation; file creation on disk is handled automatically by the system. Critique the technical implementation, correctness, and code completeness):\n\nOriginal prompt:\n{}\n\n{}\n\nDraft to audit:\n{draft}\n\nProvide constructive technical critiques and suggested improvements. Then output a JSON object on its own line, after your critique, in exactly this shape:\n{{\"status\": \"approved\", \"critique\": \"<one-line summary>\"}}\nor\n{{\"status\": \"changes_needed\", \"critique\": \"<what must change>\"}}",
+            state.transcript.input_prompt, directive_str
         );
 
         for (i, (stage_index, stage)) in auditors.iter().enumerate() {
