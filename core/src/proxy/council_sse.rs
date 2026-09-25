@@ -51,6 +51,7 @@ pub fn build_council_sse_events(
     tracing::info!("Council transcript saved to {}", log_path.display());
 
     // Stream the final response as text deltas (chunked for SSE).
+    let is_aborted = matches!(outcome, DebateOutcome::Aborted { .. });
     let final_text = match outcome {
         DebateOutcome::Success { final_response, .. } => final_response.clone(),
         DebateOutcome::Partial {
@@ -62,7 +63,8 @@ pub fn build_council_sse_events(
     };
 
     if is_openai {
-        if let Some(tool_call) = super::tool_calling::extract_tool_call(&final_text, prompt, available_tools, outcome.target()) {
+        if !is_aborted && super::tool_calling::extract_tool_call(&final_text, prompt, available_tools, outcome.target()).is_some() {
+            let tool_call = super::tool_calling::extract_tool_call(&final_text, prompt, available_tools, outcome.target()).unwrap();
             let initial_chunk = serde_json::json!({
                 "id": "chatcmpl_council",
                 "object": "chat.completion.chunk",
@@ -176,7 +178,8 @@ pub fn build_council_sse_events(
         return events;
     }
 
-    if let Some(tool_call) = super::tool_calling::extract_tool_call(&final_text, prompt, available_tools, outcome.target()) {
+    if !is_aborted && super::tool_calling::extract_tool_call(&final_text, prompt, available_tools, outcome.target()).is_some() {
+        let tool_call = super::tool_calling::extract_tool_call(&final_text, prompt, available_tools, outcome.target()).unwrap();
         events.push(
             format!(
                 "event: content_block_start\ndata: {{\"type\": \"content_block_start\", \"index\": 0, \"content_block\": {{\"type\": \"tool_use\", \"id\": \"toolu_council_01\", \"name\": \"{}\", \"input\": {{}}}}}}\n\n",
