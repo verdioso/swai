@@ -12,6 +12,7 @@ pub mod pipeline;
 pub mod planner;
 pub mod streaming;
 pub mod types;
+pub mod tools;
 pub mod vram;
 
 #[cfg(test)]

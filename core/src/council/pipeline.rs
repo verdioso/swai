@@ -132,11 +132,94 @@ impl<E: Executor> CouncilEngine<E> {
         );
         crate::council::history::save_intermediate(&state.transcript);
 
-        // Stage 0: Planner (if configured)
-        crate::council::planner::run_planner_stage(&self.config.stages, &self.executor, &mut state, &|e| self.emit(e));
-        crate::council::history::save_intermediate(&state.transcript);
+        // RC1: Planner inspection loop.
+        // The Planner may need to read files before it can emit a write directive.
+        // Loop: Planner → inspect tool → append result → re-invoke Planner.
+        // Cap at MAX_INSPECTION_ITERS to prevent infinite read-loops.
+        const MAX_INSPECTION_ITERS: usize = 8;
+        let workspace = crate::council::tools::detect_workspace_root();
+        let mut inspection_count = 0;
 
-        if !state.aborted && !crate::council::planner::should_skip_generation_for_inspection(&mut state) {
+        loop {
+            crate::council::planner::run_planner_stage(
+                &self.config.stages,
+                &self.executor,
+                &mut state,
+                &|e| self.emit(e),
+            );
+            crate::council::history::save_intermediate(&state.transcript);
+
+            if state.aborted {
+                break;
+            }
+
+            // Check if the Planner emitted an inspection (read-only) directive.
+            if let Some(ref dir) = state.planner_directive {
+                if crate::council::planner::is_immediate_inspection_directive(dir) {
+                    inspection_count += 1;
+
+                    // Try to execute the tool locally first (RC1).
+                    if let Some(result) = crate::council::tools::execute_local_tool(
+                        &workspace,
+                        &dir.tool,
+                        &dir.target,
+                    ) {
+                        // Append the tool result to the input prompt so the
+                        // Planner sees it on the next invocation.
+                        let tool_desc = format!("{} {}", dir.tool, dir.target);
+                        let header = if state.transcript.input_prompt.contains("Execution History & Tool Results:") {
+                            String::new()
+                        } else {
+                            "\n\nExecution History & Tool Results:\n".to_string()
+                        };
+                        state.transcript.input_prompt.push_str(&format!(
+                            "{}---\nTool: {} | Target: {}\nResult:\n{}\n---EXIT:{}---\n",
+                            header,
+                            dir.tool,
+                            dir.target,
+                            result.output,
+                            if result.success { "0" } else { "1" },
+                        ));
+
+                        // Record the inspection as a turn in the transcript.
+                        state.transcript.append_turn(crate::council::TurnResult {
+                            turn_index: state.transcript.turns.len(),
+                            role: crate::council::CouncilRole::Custom(format!("LocalTool:{}", tool_desc)),
+                            model_id: "swai-local".into(),
+                            output: result.output,
+                            duration: std::time::Duration::ZERO,
+                            error: if result.success { None } else { Some("tool error".into()) },
+                        });
+
+                        // Clear the directive so the Planner starts fresh.
+                        state.planner_directive = None;
+
+                        if inspection_count >= MAX_INSPECTION_ITERS {
+                            state.warnings.push(format!(
+                                "Planner exhausted {} inspection iterations without emitting a write directive.",
+                                MAX_INSPECTION_ITERS
+                            ));
+                            state.aborted = true;
+                            break;
+                        }
+
+                        // Re-invoke the Planner with the updated prompt.
+                        continue;
+                    } else {
+                        // Tool not recognized locally — fall through to external
+                        // CLI round-trip (the old behavior).
+                        crate::council::planner::should_skip_generation_for_inspection(&mut state);
+                        break;
+                    }
+                }
+            }
+
+            // Planner emitted a write directive (or no directive at all).
+            // Exit the inspection loop and proceed to Generator/Auditor.
+            break;
+        }
+
+        if !state.aborted && state.draft.is_none() {
             let max_iterations = 3;
             let mut current_iteration = 0;
             let mut last_approved = false;

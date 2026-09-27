@@ -61,6 +61,13 @@ pub fn build_tool_protocol_instructions(tools: &[Value]) -> String {
         s.push_str(&format!("- {}: {}\n", name, desc));
     }
     s.push_str("\nCRITICAL TOOL-CALLING DIRECTIVES:\n1. ATOMIC: Execute ONLY ONE tool call per turn.\n2. SINGLE-FILE: Target EXACTLY ONE file. Never bundle multiple files.\n3. RAW PAYLOAD: Do not wrap file contents in markdown code fences inside arguments.\n4. NO CHAT: Emit only the structured tool call or code without conversational commentary.\n5. FORMAT: If calling a tool, emit JSON using the tool's exact schema parameter names: {\"name\": \"TOOL_NAME\", \"arguments\": { ... }}\n");
+
+    // RC9 part 2: Append local inspection tool catalog so the Planner knows
+    // about read_file/search_files/list_dir/bash available in-process.
+    s.push('\n');
+    s.push_str(&crate::council::tools::local_tool_catalog());
+    s.push('\n');
+
     s
 }
 
