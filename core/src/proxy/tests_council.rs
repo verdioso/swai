@@ -70,9 +70,7 @@ mod tests {
             {"role": "tool", "tool_call_id": "call_1", "content": "Phase 35.1 details"}
         ]}"#;
         let extracted = extract_prompt_from_body(agentic_openai).unwrap();
-        assert!(extracted.contains("Task Goal:\nExecute Phase 35.1: Keyring"));
-        assert!(extracted.contains("read_file({\"path\":\"phase35.md\"})"));
-        assert!(extracted.contains("Phase 35.1 details"));
+        assert_eq!(extracted, "Execute Phase 35.1: Keyring");
 
         // Multi-turn agentic loop (Anthropic format):
         let agentic_anthropic = br#"{"messages": [
@@ -81,9 +79,7 @@ mod tests {
             {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu_1", "content": "Phase 35.1 details"}]}
         ]}"#;
         let extracted_anthropic = extract_prompt_from_body(agentic_anthropic).unwrap();
-        assert!(extracted_anthropic.contains("Task Goal:\nExecute Phase 35.1: Keyring"));
-        assert!(extracted_anthropic.contains("read_file"));
-        assert!(extracted_anthropic.contains("Phase 35.1 details"));
+        assert_eq!(extracted_anthropic, "Execute Phase 35.1: Keyring");
     }
 
     #[test]

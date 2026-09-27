@@ -70,7 +70,19 @@ pub struct AuditVerdict {
 }
 
 pub fn parse_audit_verdict(output: &str) -> Option<AuditVerdict> {
-    for json_str in find_balanced_json_candidates(output) {
+    let mut cleaned = output.to_string();
+    if let Some(start) = cleaned.find("<think>") {
+        if let Some(end) = cleaned.find("</think>") {
+            cleaned = format!("{}{}", &cleaned[..start], &cleaned[end + 8..]);
+        }
+    }
+    if let Some(start) = cleaned.find("<thinking>") {
+        if let Some(end) = cleaned.find("</thinking>") {
+            cleaned = format!("{}{}", &cleaned[..start], &cleaned[end + 11..]);
+        }
+    }
+
+    for json_str in find_balanced_json_candidates(&cleaned) {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
             if let Some(status) = v.get("status").and_then(|s| s.as_str()) {
                 let approved = status.eq_ignore_ascii_case("approved");
@@ -217,8 +229,9 @@ pub fn build_scoped_generator_prompt(
         Original User Task:\n\
         {}\n\n\
         CRITICAL DIRECTIVE: Emit ONLY the implementation for target '{}'.\n\
-        Emit either the raw code or the structured JSON tool call matching the tool schema:\n\
+        Emit EXACTLY ONE structured JSON tool call matching the tool schema:\n\
         {{\"name\": \"{}\", \"arguments\": {{...}}}}\n\
+        Do NOT wrap the JSON in markdown fences. Do NOT emit any conversational text or raw code outside the JSON object.\n\
         Do NOT hallucinate execution history or fake tool results. Do NOT touch any other files.",
         target_name, tool_name, directive.action, directive.rules, original_prompt, target_name, tool_name
     )
@@ -254,39 +267,8 @@ pub fn is_immediate_inspection_directive(dir: &PlannerDirective) -> bool {
     false
 }
 
-/// Format an immediate tool call from a Planner directive.
 pub fn format_immediate_tool_call(dir: &PlannerDirective) -> String {
-    let mut tool_name = dir.tool.clone();
-    let target = &dir.target;
-    let a = dir.action.to_ascii_lowercase();
-
-    if (tool_name.contains("terminal") || tool_name.is_empty())
-        && (a.contains("read") || a.contains("inspect") || a.contains("examine"))
-        && (target.contains('.') || target.contains('/'))
-    {
-        tool_name = "read_file".into();
-    }
-
-    let mut args = serde_json::Map::new();
-    let lower_tool = tool_name.to_ascii_lowercase();
-    if lower_tool.contains("read") {
-        args.insert("path".to_string(), serde_json::Value::String(target.to_string()));
-    } else if lower_tool.contains("search") || lower_tool.contains("grep") || lower_tool.contains("find") {
-        args.insert("pattern".to_string(), serde_json::Value::String(target.to_string()));
-    } else if lower_tool.contains("terminal") || lower_tool.contains("run_command") {
-        tool_name = "run_command".into();
-        args.insert("CommandLine".to_string(), serde_json::Value::String(target.to_string()));
-        args.insert("Cwd".to_string(), serde_json::Value::String(".".to_string()));
-        args.insert("WaitMsBeforeAsync".to_string(), serde_json::Value::Number(5000.into()));
-    } else if lower_tool.contains("bash") || lower_tool.contains("execute") || lower_tool.contains("explore") {
-        args.insert("command".to_string(), serde_json::Value::String(target.to_string()));
-    } else {
-        args.insert("path".to_string(), serde_json::Value::String(target.to_string()));
-    }
-    serde_json::json!({
-        "name": tool_name,
-        "arguments": args
-    }).to_string()
+    crate::proxy::tool_calling::format_immediate_tool_call(dir, None)
 }
 
 /// Check if generation should be skipped because the Planner emitted an immediate tool call.

@@ -80,7 +80,7 @@ impl Executor for ProxyExecutor {
             "messages": messages,
             "temperature": stage.temperature,
             "top_p": stage.top_p,
-            "max_tokens": COUNCIL_STAGE_MAX_TOKENS,
+            "max_tokens": stage.max_tokens.unwrap_or(COUNCIL_STAGE_MAX_TOKENS),
         });
         let body_str = serde_json::to_string(&body).unwrap_or_default();
         match self
@@ -151,7 +151,7 @@ impl Executor for ProxyExecutor {
             "messages": messages,
             "temperature": stage.temperature,
             "top_p": stage.top_p,
-            "max_tokens": COUNCIL_STAGE_MAX_TOKENS,
+            "max_tokens": stage.max_tokens.unwrap_or(COUNCIL_STAGE_MAX_TOKENS),
             "stream": true,
         });
         let body_str = serde_json::to_string(&body).unwrap_or_default();
@@ -297,7 +297,6 @@ pub fn run_council_and_record_telemetry<E: Executor>(
                 crate::council::CouncilRole::Planner => "1. Planner",
                 crate::council::CouncilRole::Generator => "2. Generator",
                 crate::council::CouncilRole::Auditor => "3. Auditor",
-                crate::council::CouncilRole::Synthesizer => "4. Synthesizer",
                 crate::council::CouncilRole::Custom(ref s) => s.as_str(),
             };
             let stage_title = format!("Stage {} ({})", i + 1, role_name);

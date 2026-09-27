@@ -311,13 +311,13 @@ impl<E: Executor> CouncilEngine<E> {
 
         if let Some(last_critique) = state.audit_results.last() {
             scoped_input = format!(
-                "{}\n\nAuditor Feedback / Required Fixes from previous iteration:\n{}\n\nPlease update the implementation to address the above feedback. ONLY output pure code inside markdown blocks (e.g., ```rust\n...\n```). Do not output JSON.",
+                "{}\n\nAuditor Feedback / Required Fixes from previous iteration:\n{}\n\nPlease update the implementation to address the above feedback. Output exactly ONE structured JSON tool call. Do not use markdown fences.",
                 scoped_input,
                 last_critique
             );
         } else {
             scoped_input = format!(
-                "{}\n\nPlease output the pure code implementation inside markdown blocks (e.g., ```rust\n...\n```). Do not wrap your response in JSON.",
+                "{}\n\nOutput exactly ONE structured JSON tool call. Do not use markdown fences.",
                 scoped_input
             );
         }
@@ -376,7 +376,7 @@ impl<E: Executor> CouncilEngine<E> {
         let directive_str = state.planner_directive.as_ref().map(|d| format!("Architect's Atomic Step:\n- Tool: {}\n- Target: {}\n- Action: {}\n- Constraints: {}", d.tool, d.target, d.action, d.rules)).unwrap_or_else(|| "No specific plan provided.".into());
 
         let prompt = format!(
-            "Review and critique the following draft implementation for any bugs, missing requirements, or improvements. (Note: The Generator produces the implementation; file creation on disk is handled automatically by the system. Critique the technical implementation, correctness, and code completeness):\n\nOriginal prompt:\n{}\n\n{}\n\nDraft to audit:\n{draft}\n\nProvide constructive technical critiques and suggested improvements. Then output a JSON object on its own line, after your critique, in exactly this shape:\n{{\"status\": \"approved\", \"critique\": \"<one-line summary>\"}}\nor\n{{\"status\": \"changes_needed\", \"critique\": \"<what must change>\"}}",
+            "Review and critique the following draft implementation for any bugs, missing requirements, or improvements. (Note: The Generator produces the implementation; file creation on disk is handled automatically by the system. Critique the technical implementation, correctness, and code completeness):\n\nOriginal prompt:\n{}\n\n{}\n\nDraft to audit:\n{draft}\n\nCRITICAL DIRECTIVE: You have NO tools available. Do NOT attempt to emit tool calls or format your output as a tool call.\nProvide constructive technical critiques and suggested improvements. Then output a JSON object on its own line, after your critique, in exactly this shape:\n{{\"status\": \"approved\", \"critique\": \"<one-line summary>\"}}\nor\n{{\"status\": \"changes_needed\", \"critique\": \"<what must change>\"}}",
             state.transcript.input_prompt, directive_str
         );
 

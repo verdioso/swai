@@ -75,7 +75,6 @@ pub fn role_label(role: &swai_core::council::CouncilRole) -> String {
         swai_core::council::CouncilRole::Planner => "Planner".to_string(),
         swai_core::council::CouncilRole::Generator => "Generator".to_string(),
         swai_core::council::CouncilRole::Auditor => "Auditor".to_string(),
-        swai_core::council::CouncilRole::Synthesizer => "Synthesizer".to_string(),
         swai_core::council::CouncilRole::Custom(name) => format!("Custom: {name}"),
     }
 }

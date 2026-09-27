@@ -22,7 +22,6 @@ pub enum CouncilRole {
     Planner,
     Generator,
     Auditor,
-    Synthesizer,
     Custom(String),
 }
 
@@ -43,6 +42,9 @@ pub struct PipelineStage {
     /// Top-p sampling parameter. Defaults to 0.9.
     #[serde(default = "default_top_p")]
     pub top_p: f32,
+    /// Maximum tokens to generate. If None, the proxy default is used.
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
     /// Optional system prompt override for this stage.
     #[serde(default)]
     pub system_prompt: Option<String>,

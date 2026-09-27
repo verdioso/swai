@@ -40,6 +40,7 @@ fn three_stage_config() -> CouncilPipelineConfig {
                 prompt_template: "{input}".into(),
                 temperature: 0.7,
                 top_p: 0.9,
+                max_tokens: None,
                 system_prompt: None,
             },
             PipelineStage {
@@ -48,14 +49,16 @@ fn three_stage_config() -> CouncilPipelineConfig {
                 prompt_template: "{input}".into(),
                 temperature: 0.7,
                 top_p: 0.9,
+                max_tokens: None,
                 system_prompt: None,
             },
             PipelineStage {
                 model_id: "synth".into(),
-                role: CouncilRole::Synthesizer,
+                role: CouncilRole::Auditor,
                 prompt_template: "{input}".into(),
                 temperature: 0.7,
                 top_p: 0.9,
+                max_tokens: None,
                 system_prompt: None,
             },
         ],
@@ -200,8 +203,8 @@ fn test_pipeline_completed_always_emitted() {
         .filter(|e| matches!(e, CouncilEvent::PipelineCompleted { .. }))
         .count();
 
-    assert_eq!(starts, 2, "one StageStarted per stage");
-    assert_eq!(completes, 2, "one StageCompleted per stage");
+    assert_eq!(starts, 3, "one StageStarted per stage");
+    assert_eq!(completes, 3, "one StageCompleted per stage");
     assert_eq!(terminal, 1, "exactly one PipelineCompleted");
 
     assert!(matches!(

@@ -92,7 +92,8 @@ pub fn inject_tool_discipline_into_config(
                 prompt_template: "".into(),
                 temperature: 0.2,
                 top_p: 0.9,
-                system_prompt: Some(protocol.clone()),
+                max_tokens: None,
+                        system_prompt: Some(protocol.clone()),
             });
         }
     }
@@ -163,16 +164,47 @@ fn is_tool_result_envelope(s: &str) -> bool {
         || t.starts_with("{\"total_count\":")
 }
 
-fn remap_arguments_to_schema(name: &str, args_json: String, tools: &[Value]) -> String {
+pub fn find_tool_in_tools<'a>(name: &str, tools: &'a [Value]) -> Option<&'a Value> {
+    if let Some(t) = tools.iter().find(|t| {
+        let n = t.get("name").or_else(|| t.get("function").and_then(|f| f.get("name"))).and_then(|n| n.as_str()).unwrap_or("");
+        n.eq_ignore_ascii_case(name)
+    }) {
+        return Some(t);
+    }
+    let lower = name.to_ascii_lowercase();
+    let is_write = matches!(lower.as_str(), "write" | "write_to_file" | "write_file" | "create_file" | "save_file" | "replace" | "replace_file" | "replace_file_content" | "edit_file" | "edit");
+    let is_read = matches!(lower.as_str(), "read" | "read_file" | "view_file" | "view");
+    let is_cmd = matches!(lower.as_str(), "terminal" | "bash" | "execute_command" | "command" | "run_command" | "bash_command");
+    let is_search = matches!(lower.as_str(), "search_files" | "search" | "grep" | "glob" | "find");
+
+    tools.iter().find(|t| {
+        let n = t.get("name").or_else(|| t.get("function").and_then(|f| f.get("name"))).and_then(|n| n.as_str()).unwrap_or("").to_ascii_lowercase();
+        if is_write && matches!(n.as_str(), "write" | "write_to_file" | "write_file" | "create_file" | "save_file" | "replace" | "replace_file" | "replace_file_content" | "edit_file" | "edit") {
+            let is_surgical = t.get("input_schema")
+                .or_else(|| t.get("parameters"))
+                .or_else(|| t.get("function").and_then(|f| f.get("parameters")))
+                .and_then(|p| p.get("properties"))
+                .map_or(false, |props| props.get("old_string").is_some() || props.get("TargetContent").is_some());
+            !is_surgical
+        } else if is_read && matches!(n.as_str(), "read" | "read_file" | "view_file" | "view") {
+            true
+        } else if is_cmd && matches!(n.as_str(), "terminal" | "bash" | "execute_command" | "command" | "run_command" | "bash_command") {
+            true
+        } else if is_search && matches!(n.as_str(), "search_files" | "search" | "grep" | "glob" | "find") {
+            true
+        } else {
+            false
+        }
+    })
+}
+
+pub fn remap_arguments_to_schema(name: &str, args_json: String, tools: &[Value]) -> String {
     let mut args: serde_json::Map<String, Value> = match serde_json::from_str(&args_json) {
         Ok(Value::Object(m)) => m,
         _ => return args_json,
     };
 
-    let tool = tools.iter().find(|t| {
-        let n = t.get("name").or_else(|| t.get("function").and_then(|f| f.get("name"))).and_then(|n| n.as_str()).unwrap_or("");
-        n.eq_ignore_ascii_case(name)
-    });
+    let tool = find_tool_in_tools(name, tools);
 
     if let Some(t) = tool {
         if let Some(props) = t.get("input_schema")
@@ -181,28 +213,123 @@ fn remap_arguments_to_schema(name: &str, args_json: String, tools: &[Value]) -> 
             .and_then(|p| p.get("properties"))
             .and_then(|p| p.as_object())
         {
-            // Remap 'path' to 'file_path' if the tool expects 'file_path' but we have 'path'
-            if props.contains_key("file_path") && !props.contains_key("path") {
-                if let Some(val) = args.remove("path") {
-                    args.insert("file_path".to_string(), val);
+            let path_candidates = ["path", "file_path", "filepath", "filename", "TargetFile", "file"];
+            let expected_path_key = path_candidates.iter().find(|&&k| props.contains_key(k)).copied();
+            if let Some(exp_key) = expected_path_key {
+                if !args.contains_key(exp_key) {
+                    let existing_val = path_candidates.iter().find_map(|&k| args.remove(k));
+                    if let Some(val) = existing_val {
+                        args.insert(exp_key.to_string(), val);
+                    }
                 }
             }
-            // Remap 'file_path' to 'path' if the tool expects 'path' but we have 'file_path'
-            if props.contains_key("path") && !props.contains_key("file_path") {
-                if let Some(val) = args.remove("file_path") {
-                    args.insert("path".to_string(), val);
+
+            let content_candidates = ["content", "contents", "CodeContent", "ReplacementContent", "text", "body"];
+            let expected_content_key = content_candidates.iter().find(|&&k| props.contains_key(k)).copied();
+            if let Some(exp_key) = expected_content_key {
+                if !args.contains_key(exp_key) {
+                    let existing_val = content_candidates.iter().find_map(|&k| args.remove(k));
+                    if let Some(val) = existing_val {
+                        args.insert(exp_key.to_string(), val);
+                    }
                 }
             }
-            // Remap target paths for Aider 'filepath'
-            if props.contains_key("filepath") && !props.contains_key("path") {
-                if let Some(val) = args.remove("path").or_else(|| args.remove("file_path")) {
-                    args.insert("filepath".to_string(), val);
+
+            if props.contains_key("Overwrite") && !args.contains_key("Overwrite") {
+                args.insert("Overwrite".to_string(), Value::Bool(true));
+            }
+            if props.contains_key("Description") && !args.contains_key("Description") {
+                args.insert("Description".to_string(), Value::String("Updated by SWAI Council".to_string()));
+            }
+
+            let cmd_candidates = ["command", "CommandLine", "cmd"];
+            let expected_cmd_key = cmd_candidates.iter().find(|&&k| props.contains_key(k)).copied();
+            if let Some(exp_key) = expected_cmd_key {
+                if !args.contains_key(exp_key) {
+                    let existing_val = cmd_candidates.iter().find_map(|&k| args.remove(k));
+                    if let Some(val) = existing_val {
+                        args.insert(exp_key.to_string(), val);
+                    }
+                }
+            }
+            if props.contains_key("Cwd") && !args.contains_key("Cwd") {
+                args.insert("Cwd".to_string(), Value::String(".".to_string()));
+            }
+            if props.contains_key("WaitMsBeforeAsync") && !args.contains_key("WaitMsBeforeAsync") {
+                args.insert("WaitMsBeforeAsync".to_string(), Value::Number(5000.into()));
+            }
+
+            let pattern_candidates = ["pattern", "query", "regex", "search_term"];
+            let expected_pattern_key = pattern_candidates.iter().find(|&&k| props.contains_key(k)).copied();
+            if let Some(exp_key) = expected_pattern_key {
+                if !args.contains_key(exp_key) {
+                    let existing_val = pattern_candidates.iter().find_map(|&k| args.remove(k));
+                    if let Some(val) = existing_val {
+                        args.insert(exp_key.to_string(), val);
+                    }
                 }
             }
         }
     }
 
     serde_json::to_string(&args).unwrap_or(args_json)
+}
+
+pub fn format_immediate_tool_call(
+    dir: &crate::council::planner::PlannerDirective,
+    available_tools: Option<&[Value]>,
+) -> String {
+    let mut tool_name = dir.tool.clone();
+    let target = &dir.target;
+    let a = dir.action.to_ascii_lowercase();
+
+    if (tool_name.contains("terminal") || tool_name.is_empty())
+        && (a.contains("read") || a.contains("inspect") || a.contains("examine"))
+        && (target.contains('.') || target.contains('/'))
+    {
+        tool_name = "read_file".into();
+    }
+
+    let lower_tool = tool_name.to_ascii_lowercase();
+    let mut args = serde_json::Map::new();
+    if lower_tool.contains("read") {
+        args.insert("path".to_string(), Value::String(target.to_string()));
+    } else if lower_tool.contains("search") || lower_tool.contains("grep") || lower_tool.contains("find") {
+        args.insert("pattern".to_string(), Value::String(target.to_string()));
+    } else if lower_tool.contains("terminal") || lower_tool.contains("run_command") || lower_tool.contains("bash") || lower_tool.contains("execute") || lower_tool.contains("explore") {
+        args.insert("command".to_string(), Value::String(target.to_string()));
+    } else {
+        args.insert("path".to_string(), Value::String(target.to_string()));
+    }
+
+    let mut args_str = serde_json::to_string(&args).unwrap_or_default();
+
+    if let Some(tools) = available_tools {
+        if let Some(target_tool) = find_tool_in_tools(&tool_name, tools) {
+            let actual_name = target_tool
+                .get("name")
+                .or_else(|| target_tool.get("function").and_then(|f| f.get("name")))
+                .and_then(|n| n.as_str())
+                .unwrap_or(&tool_name);
+            tool_name = actual_name.to_string();
+        }
+        args_str = remap_arguments_to_schema(&tool_name, args_str, tools);
+    } else {
+        if lower_tool.contains("terminal") || lower_tool.contains("run_command") {
+            tool_name = "run_command".into();
+            args.insert("CommandLine".to_string(), Value::String(target.to_string()));
+            args.insert("Cwd".to_string(), Value::String(".".to_string()));
+            args.insert("WaitMsBeforeAsync".to_string(), Value::Number(5000.into()));
+            args.remove("command");
+            args_str = serde_json::to_string(&args).unwrap_or_default();
+        }
+    }
+
+    let parsed_args: Value = serde_json::from_str(&args_str).unwrap_or(Value::Object(args));
+    serde_json::json!({
+        "name": tool_name,
+        "arguments": parsed_args
+    }).to_string()
 }
 
 /// Extract tool call from model output text.
@@ -243,8 +370,15 @@ pub fn extract_tool_call(
                     if let Some(tools) = available_tools {
                         sanitized_args = remap_arguments_to_schema(name, sanitized_args, tools);
                     }
+                    let actual_name = if let Some(tools) = available_tools {
+                        find_tool_in_tools(name, tools)
+                            .and_then(|t| t.get("name").or_else(|| t.get("function").and_then(|f| f.get("name"))).and_then(|n| n.as_str()))
+                            .unwrap_or(name)
+                    } else {
+                        name
+                    };
                     return Some(ToolCallExtraction {
-                        name: name.to_string(),
+                        name: actual_name.to_string(),
                         arguments: sanitized_args,
                     });
                 }
@@ -268,8 +402,15 @@ pub fn extract_tool_call(
             if let Some(tools) = available_tools {
                 sanitized_args = remap_arguments_to_schema(func_name.trim(), sanitized_args, tools);
             }
+            let actual_name = if let Some(tools) = available_tools {
+                find_tool_in_tools(func_name.trim(), tools)
+                    .and_then(|t| t.get("name").or_else(|| t.get("function").and_then(|f| f.get("name"))).and_then(|n| n.as_str()))
+                    .unwrap_or(func_name.trim())
+            } else {
+                func_name.trim()
+            };
             return Some(ToolCallExtraction {
-                name: func_name.trim().to_string(),
+                name: actual_name.to_string(),
                 arguments: sanitized_args,
             });
         }
@@ -389,9 +530,11 @@ pub fn extract_tool_call(
                             if !cmd.is_empty() {
                                 let mut args_map = serde_json::Map::new();
                                 args_map.insert("command".to_string(), Value::String(cmd.to_string()));
+                                let raw_args = serde_json::to_string(&args_map).unwrap_or_default();
+                                let remapped_args = remap_arguments_to_schema(tool_name, raw_args, tools);
                                 return Some(ToolCallExtraction {
                                     name: tool_name.to_string(),
-                                    arguments: serde_json::to_string(&args_map).unwrap_or_default(),
+                                    arguments: remapped_args,
                                 });
                             }
                         }
@@ -494,7 +637,8 @@ mod tests {
             stages: vec![crate::council::PipelineStage {
                 model_id: "test".into(), role: crate::council::CouncilRole::Generator,
                 prompt_template: "".into(), temperature: 0.7, top_p: 0.9,
-                system_prompt: Some("Base system prompt".into()),
+                max_tokens: None,
+                        system_prompt: Some("Base system prompt".into()),
             }],
             ..Default::default()
         };

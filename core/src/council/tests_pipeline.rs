@@ -60,7 +60,7 @@ fn test_execute_single_generator_success() {
             prompt_template: "Generate: {input}".into(),
             temperature: 0.7,
             top_p: 0.9,
-            system_prompt: None,
+            max_tokens: None, system_prompt: None,
         }],
         ..Default::default()
     };
@@ -84,7 +84,7 @@ fn test_execute_with_auditor_loop_success() {
                 prompt_template: "Generate: {input}".into(),
                 temperature: 0.7,
                 top_p: 0.9,
-                system_prompt: None,
+                max_tokens: None, system_prompt: None,
             },
             PipelineStage {
                 model_id: "mistral".into(),
@@ -92,7 +92,7 @@ fn test_execute_with_auditor_loop_success() {
                 prompt_template: "Audit: {input}".into(),
                 temperature: 0.3,
                 top_p: 0.8,
-                system_prompt: None,
+                max_tokens: None, system_prompt: None,
             },
         ],
         ..Default::default()
@@ -124,7 +124,7 @@ fn test_execute_auditor_failure_with_skip_fallback() {
                 prompt_template: "Generate: {input}".into(),
                 temperature: 0.7,
                 top_p: 0.9,
-                system_prompt: None,
+                max_tokens: None, system_prompt: None,
             },
             PipelineStage {
                 model_id: "mistral".into(),
@@ -132,7 +132,7 @@ fn test_execute_auditor_failure_with_skip_fallback() {
                 prompt_template: "Audit: {input}".into(),
                 temperature: 0.3,
                 top_p: 0.8,
-                system_prompt: None,
+                max_tokens: None, system_prompt: None,
             },
         ],
         fallback: FallbackAction::Skip,
@@ -166,7 +166,7 @@ fn test_execute_generator_failure_with_abort() {
             prompt_template: "Generate: {input}".into(),
             temperature: 0.7,
             top_p: 0.9,
-            system_prompt: None,
+            max_tokens: None, system_prompt: None,
         }],
         fallback: FallbackAction::Abort,
         ..Default::default()

@@ -119,7 +119,8 @@ mod tests {
             prompt_template: String::new(),
             temperature: 0.7,
             top_p: 0.9,
-            system_prompt: None,
+            max_tokens: None,
+                        system_prompt: None,
         };
         let executor = FixedExecutor("hello world".into());
         let out = executor

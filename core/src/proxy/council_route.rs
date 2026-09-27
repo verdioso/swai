@@ -63,6 +63,7 @@ fn resolve_pipeline_config(req: &Request, state: &Arc<Mutex<ProxyState>>) -> Cou
                         prompt_template: String::new(),
                         temperature: 0.7,
                         top_p: 0.9,
+                        max_tokens: None,
                         system_prompt: None,
                     },
                     crate::council::PipelineStage {
@@ -71,14 +72,7 @@ fn resolve_pipeline_config(req: &Request, state: &Arc<Mutex<ProxyState>>) -> Cou
                         prompt_template: String::new(),
                         temperature: 0.7,
                         top_p: 0.9,
-                        system_prompt: None,
-                    },
-                    crate::council::PipelineStage {
-                        model_id: gen,
-                        role: crate::council::CouncilRole::Synthesizer,
-                        prompt_template: String::new(),
-                        temperature: 0.7,
-                        top_p: 0.9,
+                        max_tokens: Some(10_000),
                         system_prompt: None,
                     },
                 ],

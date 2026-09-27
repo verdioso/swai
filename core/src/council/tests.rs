@@ -21,13 +21,12 @@ fn test_council_role_custom_serializes() {
 
 #[test]
 fn test_pipeline_stage_defaults() {
-    let stage = PipelineStage {
+    let stage = PipelineStage { max_tokens: None,
         model_id: "llama3".into(),
         role: CouncilRole::Generator,
         prompt_template: "Analyze: {input}".into(),
         temperature: 0.7,
-        top_p: 0.9,
-        system_prompt: None,
+        top_p: 0.9, system_prompt: None,
     };
     let json = serde_json::to_string(&stage).unwrap();
     let back: PipelineStage = serde_json::from_str(&json).unwrap();
@@ -55,7 +54,7 @@ fn test_fallback_action_default_is_skip() {
 fn test_council_pipeline_config_roundtrip_json() {
     let config = CouncilPipelineConfig {
         stages: vec![
-            PipelineStage {
+            PipelineStage { max_tokens: None,
                 model_id: "llama3".into(),
                 role: CouncilRole::Generator,
                 prompt_template: "Generate: {input}".into(),
@@ -63,13 +62,12 @@ fn test_council_pipeline_config_roundtrip_json() {
                 top_p: 0.95,
                 system_prompt: Some("You are a generator.".into()),
             },
-            PipelineStage {
+            PipelineStage { max_tokens: None,
                 model_id: "mistral".into(),
                 role: CouncilRole::Auditor,
                 prompt_template: "Audit: {input}".into(),
                 temperature: 0.3,
-                top_p: 0.8,
-                system_prompt: None,
+                top_p: 0.8, system_prompt: None,
             },
         ],
         mode: CouncilMode::Concurrent,
@@ -88,13 +86,12 @@ fn test_council_pipeline_config_roundtrip_json() {
 #[test]
 fn test_council_pipeline_config_roundtrip_toml() {
     let config = CouncilPipelineConfig {
-        stages: vec![PipelineStage {
+        stages: vec![PipelineStage { max_tokens: None,
             model_id: "llama3".into(),
-            role: CouncilRole::Synthesizer,
+            role: CouncilRole::Auditor,
             prompt_template: "Synthesize: {input}".into(),
             temperature: 0.5,
-            top_p: 0.85,
-            system_prompt: None,
+            top_p: 0.85, system_prompt: None,
         }],
         mode: CouncilMode::Auto,
         fallback: FallbackAction::Abort,
