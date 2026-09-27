@@ -20,7 +20,8 @@ pub fn spawn_health_monitor(
         let port = pm.lock().ok().and_then(|p| p.get_port_for_model(&model_id));
 
         if let Some(port) = port {
-            let monitor = swai_core::health_monitor::HealthMonitor::new(port, 30);
+            let timeout = pm.lock().ok().and_then(|p| p.config().models.iter().find(|m| m.id == model_id).map(|m| m.health_timeout_sec)).unwrap_or(90);
+            let monitor = swai_core::health_monitor::HealthMonitor::new(port, timeout);
             std::thread::spawn(move || {
                 monitor.wait_until_ready_with_updates(health_tx);
             });
