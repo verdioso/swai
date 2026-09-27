@@ -24,7 +24,7 @@ pub fn role_meta(role: &CouncilRole) -> (&'static str, &'static str, &'static st
         CouncilRole::Planner => ("PLANNER", PURPLE_COLOR, "planner"),
         CouncilRole::Generator => ("GENERATOR", CYAN_COLOR, "generator"),
         CouncilRole::Auditor => ("AUDITOR", AMBER_COLOR, "auditor"),
-        CouncilRole::Synthesizer => ("SYNTHESIZER", GREEN_COLOR, "synthesizer"),
+        
         CouncilRole::Custom(_) => ("CUSTOM", AMBER_COLOR, "auditor"),
     }
 }

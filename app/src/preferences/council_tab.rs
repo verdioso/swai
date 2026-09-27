@@ -119,6 +119,7 @@ pub fn build_council_tab(config: &Config, state: &Arc<Mutex<CouncilTabState>>) -
             prompt_template: String::new(),
             temperature: 0.7,
             top_p: 0.9,
+            max_tokens: None,
             system_prompt: None,
         }));
         add_stage_row(&sl, &st, new_stage.clone(), &cf);
@@ -229,15 +230,14 @@ fn add_stage_row(
     let stage_lock = stage.lock().unwrap();
 
     // Role picker.
-    let roles = ["Planner", "Generator", "Auditor", "Synthesizer"];
+    let roles = ["Planner", "Generator", "Auditor"];
     let rl = StringList::new(&roles);
     let rdd = DropDown::new(Some(rl), None::<gtk::Expression>);
     let ri = match &stage_lock.role {
         CouncilRole::Planner => 0,
         CouncilRole::Generator => 1,
         CouncilRole::Auditor => 2,
-        CouncilRole::Synthesizer => 3,
-        CouncilRole::Custom(_) => 2,
+                CouncilRole::Custom(_) => 2,
     };
     rdd.set_selected(ri as u32);
     let rr = ActionRow::builder().title("Role").build();
@@ -286,8 +286,7 @@ fn add_stage_row(
             0 => CouncilRole::Planner,
             1 => CouncilRole::Generator,
             2 => CouncilRole::Auditor,
-            3 => CouncilRole::Synthesizer,
-            _ => CouncilRole::Auditor,
+                        _ => CouncilRole::Auditor,
         };
         stg.lock().unwrap().role = role;
     });
@@ -332,6 +331,7 @@ mod tests {
                     prompt_template: "Answer: {input}".into(),
                     temperature: 0.7,
                     top_p: 0.9,
+                    max_tokens: None,
                     system_prompt: None,
                 },
                 PipelineStage {
@@ -367,6 +367,7 @@ mod tests {
                 prompt_template: "Summarize: {input}".into(),
                 temperature: 0.3,
                 top_p: 0.95,
+                max_tokens: None,
                 system_prompt: None,
             }))],
             mode: CouncilMode::Sequential,
