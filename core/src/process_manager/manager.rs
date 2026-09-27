@@ -412,14 +412,14 @@ impl ProcessManager {
         self.start_model(id)?;
 
         // Extract the port from config for health monitoring
-        if let Some(port) = self
+        if let Some(model_cfg) = self
             .config
             .models
             .iter()
             .find(|m| m.id == id)
-            .map(|m| m.port)
         {
-            let monitor = HealthMonitor::new(port, 30);
+            let timeout = model_cfg.health_timeout_sec;
+            let monitor = HealthMonitor::new(model_cfg.port, timeout);
             std::thread::spawn(move || {
                 monitor.wait_until_ready_with_updates(tx);
             });
