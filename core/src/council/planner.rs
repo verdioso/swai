@@ -248,6 +248,8 @@ pub fn is_immediate_inspection_directive(dir: &PlannerDirective) -> bool {
         || t == "clarify"
         || t == "skill_view"
         || t == "skills_list"
+        || t == "list_dir"
+        || t == "ls"
         || t == "run_command"
         || t == "terminal"
         || t == "explore"
