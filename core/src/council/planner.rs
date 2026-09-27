@@ -311,7 +311,9 @@ pub fn run_planner_stage<E: Executor>(
     });
 
     let tool_protocol = stage.system_prompt.as_deref().unwrap_or("");
-    let prompt = build_planner_prompt(&state.transcript.input_prompt, tool_protocol);
+    let catalog = crate::council::tools::local_tool_catalog();
+    let combined = format!("{}\n\n{}", tool_protocol, catalog);
+    let prompt = build_planner_prompt(&state.transcript.input_prompt, &combined);
 
     match executor.execute_stream(stage, &prompt, stage_index, &|event| emit(event.clone())) {
         Ok(output) => {
