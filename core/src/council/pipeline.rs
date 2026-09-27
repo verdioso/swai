@@ -74,6 +74,7 @@ pub struct CouncilEngine<E: Executor> {
     pub config: CouncilPipelineConfig,
     pub executor: E,
     events: Option<tokio::sync::broadcast::Sender<CouncilEvent>>,
+    pub workspace: Option<std::path::PathBuf>,
 }
 
 impl<E: Executor> CouncilEngine<E> {
@@ -82,10 +83,17 @@ impl<E: Executor> CouncilEngine<E> {
             config,
             executor,
             events: None,
+            workspace: None,
         }
     }
 
     /// Construct an engine that broadcasts `CouncilEvent`s to subscribers.
+    
+    pub fn with_workspace(mut self, workspace: std::path::PathBuf) -> Self {
+        self.workspace = Some(workspace);
+        self
+    }
+
     pub fn with_events(
         config: CouncilPipelineConfig,
         executor: E,
@@ -95,6 +103,7 @@ impl<E: Executor> CouncilEngine<E> {
             config,
             executor,
             events: Some(events),
+            workspace: None,
         }
     }
 
@@ -137,7 +146,7 @@ impl<E: Executor> CouncilEngine<E> {
         // Loop: Planner → inspect tool → append result → re-invoke Planner.
         // Cap at MAX_INSPECTION_ITERS to prevent infinite read-loops.
         const MAX_INSPECTION_ITERS: usize = 8;
-        let workspace = crate::council::tools::detect_workspace_root();
+        let workspace = self.workspace.clone().unwrap_or_else(|| crate::council::tools::detect_workspace_root());
         let mut inspection_count = 0;
 
         loop {

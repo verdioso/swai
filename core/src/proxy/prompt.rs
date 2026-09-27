@@ -110,3 +110,20 @@ pub fn extract_prompt_from_body(body: &[u8]) -> Option<String> {
     }
     None
 }
+
+pub fn extract_workspace_from_body(body: &[u8]) -> Option<String> {
+    let json_val = serde_json::from_slice::<serde_json::Value>(body).ok()?;
+    let messages = json_val.get("messages").and_then(|m| m.as_array())?;
+    for msg in messages {
+        if msg.get("role").and_then(|r| r.as_str()) == Some("system") {
+            if let Some(text) = super::prompt::extract_message_text(msg) {
+                if let Some(idx) = text.find("Working directory: ") {
+                    let start = idx + "Working directory: ".len();
+                    let end = text[start..].find('\n').map(|i| start + i).unwrap_or(text.len());
+                    return Some(text[start..end].trim().to_string());
+                }
+            }
+        }
+    }
+    None
+}

@@ -124,7 +124,10 @@ pub fn handle_council_request(
     };
     let (tx, rx) = tokio::sync::broadcast::channel(BROADCAST_CAPACITY);
     let executor = EventProxyExecutor { inner };
-    let engine = CouncilEngine::with_events(pipeline_config, executor, tx);
+    let mut engine = CouncilEngine::with_events(pipeline_config, executor, tx);
+    if let Some(ws) = crate::proxy::prompt::extract_workspace_from_body(request_body) {
+        engine = engine.with_workspace(std::path::PathBuf::from(ws));
+    }
 
     let is_stream = serde_json::from_slice::<serde_json::Value>(request_body)
         .ok()
