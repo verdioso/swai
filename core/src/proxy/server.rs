@@ -57,7 +57,15 @@ impl ProxyServer {
                 }
 
                 let state = Arc::clone(&state_for_proxy);
-                handle_proxy_request(req, state, client_for_proxy.clone());
+                let client = client_for_proxy.clone();
+                if let Err(e) = std::thread::Builder::new()
+                    .name("proxy-worker".into())
+                    .spawn(move || {
+                        handle_proxy_request(req, state, client);
+                    })
+                {
+                    tracing::error!("failed to spawn proxy worker thread: {}", e);
+                }
             }
 
             info!("reverse proxy stopped");

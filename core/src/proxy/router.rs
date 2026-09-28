@@ -196,43 +196,44 @@ pub fn handle_proxy_request(mut req: Request, state: Arc<Mutex<ProxyState>>, cli
     };
 
     let status = response.status().as_u16();
-    let response_headers: Vec<Header> = response
-        .headers()
-        .iter()
-        .map(|(name, value)| {
-            Header::from_bytes(name.as_str().as_bytes(), value.as_bytes()).unwrap_or_else(|_| {
-                Header::from_bytes(name.as_str().as_bytes(), b"")
-                    .expect("header construction should never fail")
-            })
-        })
-        .collect();
-
-    // Get the response body for streaming.
-    let response_bytes = match response.bytes() {
-        Ok(b) => b,
-        Err(e) => {
-            debug!("failed to read response body: {}", e);
-            let _ = req.respond(error_response(502, "Failed to read model response"));
-            return;
-        }
-    };
-
-    let mut processed_bytes = response_bytes.to_vec();
-
-    // Normalize codex payloads if needed.
-    if path_and_query.contains("/v1/responses") && method_str == "POST" {
-        if let Ok(mut json_val) = serde_json::from_slice::<serde_json::Value>(&processed_bytes) {
-            normalize_codex_payload(&mut json_val);
-            if let Ok(serialized) = serde_json::to_vec(&json_val) {
-                processed_bytes = serialized;
-            }
-        }
-    }
 
     // Translate OpenAI SSE responses to the Responses API format if needed.
     let is_responses_api = path_and_query.contains("/v1/responses");
 
     if is_responses_api {
+        let response_headers: Vec<Header> = response
+            .headers()
+            .iter()
+            .map(|(name, value)| {
+                Header::from_bytes(name.as_str().as_bytes(), value.as_bytes()).unwrap_or_else(|_| {
+                    Header::from_bytes(name.as_str().as_bytes(), b"")
+                        .expect("header construction should never fail")
+                })
+            })
+            .collect();
+
+        // Get the response body for codex translation.
+        let response_bytes = match response.bytes() {
+            Ok(b) => b,
+            Err(e) => {
+                debug!("failed to read response body: {}", e);
+                let _ = req.respond(error_response(502, "Failed to read model response"));
+                return;
+            }
+        };
+
+        let mut processed_bytes = response_bytes.to_vec();
+
+        // Normalize codex payloads if needed.
+        if method_str == "POST" {
+            if let Ok(mut json_val) = serde_json::from_slice::<serde_json::Value>(&processed_bytes) {
+                normalize_codex_payload(&mut json_val);
+                if let Ok(serialized) = serde_json::to_vec(&json_val) {
+                    processed_bytes = serialized;
+                }
+            }
+        }
+
         let body_str = String::from_utf8_lossy(&processed_bytes).to_string();
         let translated_events = translate_openai_sse_to_responses(&body_str, "swai-active-model");
         let streaming_body = ResponsesStreamingBody {
@@ -255,10 +256,27 @@ pub fn handle_proxy_request(mut req: Request, state: Arc<Mutex<ProxyState>>, cli
             debug!("failed to respond to responses API client: {}", e);
         }
     } else {
+        // True incremental streaming for /v1/messages and /v1/chat/completions:
+        // Strip hop-by-hop headers and content-length so tiny_http chunks the stream in real time.
+        let response_headers: Vec<Header> = response
+            .headers()
+            .iter()
+            .filter(|(name, _)| {
+                let n = name.as_str().to_ascii_lowercase();
+                !is_hop_by_hop_header(&n) && n != "content-length"
+            })
+            .map(|(name, value)| {
+                Header::from_bytes(name.as_str().as_bytes(), value.as_bytes()).unwrap_or_else(|_| {
+                    Header::from_bytes(name.as_str().as_bytes(), b"")
+                        .expect("header construction should never fail")
+                })
+            })
+            .collect();
+
         let tiny_response = Response::new(
             tiny_http::StatusCode(status),
             response_headers,
-            Box::new(std::io::Cursor::new(processed_bytes)),
+            Box::new(response),
             None,
             None,
         );
