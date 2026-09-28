@@ -1,7 +1,6 @@
 #[cfg(test)]
 mod tests {
     use crate::checkpoint::*;
-    use tempfile::TempDir;
 
     #[test]
     fn test_session_checkpoint_new_is_empty() {

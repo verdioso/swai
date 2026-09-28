@@ -15,7 +15,7 @@
 use crate::council::barrier::{CouncilPauseController, PauseDecision};
 use crate::council::events::CouncilEvent;
 use crate::council::executor::Executor;
-use crate::council::types::{CouncilPipelineConfig, CouncilRole, PipelineStage, TurnResult};
+use crate::council::types::{CouncilRole, PipelineStage, TurnResult};
 
 /// Wait at the human-in-the-loop barrier before a stage executes.
 ///
@@ -162,10 +162,6 @@ mod tests {
         let controller = CouncilPauseController::new();
         assert_eq!(await_human_gate(&controller), None);
     }
-
-    #[test]
-
-    #[test]
 
     #[test]
     fn test_pause_then_resume_injects_feedback() {
