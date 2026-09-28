@@ -12,12 +12,17 @@ pub struct ToolCallExtraction {
 
 /// Filter client tools so non-coding tools (e.g. text_to_speech) do not pollute the Council prompt.
 pub fn is_allowed_coding_tool(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    if lower.starts_with("mcp__") {
+        return true;
+    }
     matches!(
-        name.to_ascii_lowercase().as_str(),
+        lower.as_str(),
         "read_file" | "read" | "write_file" | "write" | "write_to_file" | "create_file"
             | "edit" | "multiedit" | "replace" | "patch" | "todowrite" | "task"
-            | "terminal" | "bash" | "execute_command" | "command"
-            | "search_files" | "search" | "grep" | "glob" | "view_file" | "view"
+            | "terminal" | "bash" | "bashoutput" | "killshell" | "execute_command" | "command"
+            | "search_files" | "search" | "grep" | "glob" | "globtool" | "view_file" | "view"
+            | "ls" | "webfetch" | "websearch" | "notebookedit" | "exitplanmode" | "skill"
     )
 }
 

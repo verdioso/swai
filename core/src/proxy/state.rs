@@ -217,13 +217,12 @@ impl ProxyState {
     }
 
     /// Clear all model state and mark as not loading.
+    /// Note: Does NOT reset user preferences (enable_council, enable_checkpointing).
     pub fn clear(&mut self) {
         self.active_models.clear();
         self.model_ctx_sizes.clear();
         self.primary_port = None;
         self.is_loading = false;
-        self.enable_checkpointing = true;
-        self.enable_council = true;
         self.compaction_threshold_pct = crate::compaction::DEFAULT_THRESHOLD_PCT;
     }
 }

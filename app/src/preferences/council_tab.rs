@@ -340,6 +340,7 @@ mod tests {
                     prompt_template: "Critique: {input}".into(),
                     temperature: 0.5,
                     top_p: 0.85,
+                    max_tokens: None,
                     system_prompt: Some("Be thorough".into()),
                 },
             ],
@@ -363,7 +364,7 @@ mod tests {
         let state = CouncilTabState {
             stages: vec![Arc::new(Mutex::new(PipelineStage {
                 model_id: "test-model".into(),
-                role: CouncilRole::Synthesizer,
+                role: CouncilRole::Auditor,
                 prompt_template: "Summarize: {input}".into(),
                 temperature: 0.3,
                 top_p: 0.95,
@@ -376,7 +377,7 @@ mod tests {
         let cfg = state.to_config();
         assert_eq!(cfg.stages.len(), 1);
         assert_eq!(cfg.stages[0].model_id, "test-model");
-        assert_eq!(cfg.stages[0].role, CouncilRole::Synthesizer);
+        assert_eq!(cfg.stages[0].role, CouncilRole::Auditor);
         assert_eq!(cfg.mode, CouncilMode::Sequential);
     }
 }

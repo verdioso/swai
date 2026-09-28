@@ -22,6 +22,9 @@ target
 *.tar.gz
 *.AppImage
 *.patch
+*.diff
+scratch*
+fix_*.py
 /REPORT.md
 
 

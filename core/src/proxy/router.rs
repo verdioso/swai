@@ -57,19 +57,38 @@ pub fn handle_proxy_request(mut req: Request, state: Arc<Mutex<ProxyState>>, cli
     // Council model interception: route to CouncilEngine locally.
     // Active when enable_council is true in proxy state, or when explicitly
     // requesting a council virtual model.
-    if let Some(model_id) = extract_model_from_body(&request_body) {
-        if is_council_model(&model_id) || should_run_council_universal(&req, &state, &request_body) {
-            super::council_route::handle_council_request(
-                req,
-                &model_id,
-                &request_body,
-                state.clone(),
-                client.clone(),
-                target_port,
-            );
-            return;
-        }
+    let model_id_opt = extract_model_from_body(&request_body);
+    let enable_council_flag = state.lock().map(|s| s.enable_council).unwrap_or(false);
+    let run_council = if let Some(ref mid) = model_id_opt {
+        is_council_model(mid) || should_run_council_universal(&req, &state, &request_body)
+    } else {
+        false
+    };
+
+    if run_council {
+        let model_id = model_id_opt.unwrap_or_default();
+        tracing::info!(
+            "SWAI Proxy: Routing to Council pipeline (model: {}, enable_council: {})",
+            model_id,
+            enable_council_flag
+        );
+        super::council_route::handle_council_request(
+            req,
+            &model_id,
+            &request_body,
+            state.clone(),
+            client.clone(),
+            target_port,
+        );
+        return;
     }
+
+    tracing::info!(
+        "SWAI Proxy: Routing to Passthrough/Single-model (model: {:?}, target_port: {:?}, enable_council: {})",
+        model_id_opt,
+        target_port,
+        enable_council_flag
+    );
 
     let target_port = match target_port {
         Some(port) => port,

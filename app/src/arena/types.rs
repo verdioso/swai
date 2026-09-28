@@ -171,10 +171,6 @@ mod tests {
             "Auditor"
         );
         assert_eq!(
-            role_label(&swai_core::council::CouncilRole::Synthesizer),
-            "Synthesizer"
-        );
-        assert_eq!(
             role_label(&swai_core::council::CouncilRole::Custom("critic".into())),
             "Custom: critic"
         );

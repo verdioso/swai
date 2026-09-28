@@ -64,6 +64,7 @@ mod tests {
                 prompt_template: String::new(),
                 temperature: 0.7,
                 top_p: 0.9,
+                max_tokens: None,
                 system_prompt: None,
             }],
             ..Default::default()

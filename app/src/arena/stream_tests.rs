@@ -50,9 +50,9 @@ fn full_pipeline_actions() -> Vec<ArenaStreamAction> {
         },
         CouncilEvent::StageStarted {
             stage_index: 2,
-            role: swai_core::council::CouncilRole::Synthesizer,
-            model_id: "synth".into(),
-            model_name: "synth".into(),
+            role: swai_core::council::CouncilRole::Auditor,
+            model_id: "auditor".into(),
+            model_name: "auditor".into(),
         },
         CouncilEvent::TokenChunk {
             stage_index: 2,
