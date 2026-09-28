@@ -6,6 +6,7 @@
 pub mod barrier;
 pub mod events;
 pub mod executor;
+pub mod frontier;
 pub mod history;
 pub mod human_feedback;
 pub mod pipeline;
