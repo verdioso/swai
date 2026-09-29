@@ -35,9 +35,18 @@ pub fn detect_workspace_root() -> PathBuf {
         }
         match dir.parent() {
             Some(parent) if parent != dir => dir = parent,
-            _ => return cwd,
+            _ => break,
         }
     }
+    if let Ok(home) = std::env::var("HOME") {
+        if cwd == Path::new(&home) {
+            let candidate = PathBuf::from("/mnt/orico/Documents/ApplicationsRAW/swai");
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+    cwd
 }
 
 /// Resolve and validate a path relative to the workspace root.

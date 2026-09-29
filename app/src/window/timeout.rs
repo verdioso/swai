@@ -261,7 +261,7 @@ pub fn attach_timeout_handler(ctx: TimeoutContext) {
             bottom_deck.handle_slot_update(&update);
             for c in cards_borrow.iter_mut() {
                 if c.config().id == update.model_id {
-                    c.set_context(update.tokens_used, update.n_ctx);
+                    c.set_context(update.tokens_used, update.n_ctx, update.total_tokens);
                     if matches!(c.state(), CardState::Ready) {
                         c.set_speed(update.predicted_per_second);
                         c.set_prompt_speed(update.prompt_per_second);

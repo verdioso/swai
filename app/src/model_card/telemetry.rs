@@ -1,9 +1,100 @@
 use gtk::prelude::*;
 use gtk4 as gtk;
 
+use super::types::PollingState;
 use super::view::ModelCard;
 
 impl ModelCard {
+    /// Update the context usage display and polling state.
+    ///
+    /// Called from the main thread (via `glib::MainContext::default().invoke()`)
+    /// when a new /slots response is received.
+    ///
+    /// Renders context as a 4px GtkProgressBar with 4-tier coloring:
+    ///   - Green  (#4ade80) for 0–40%
+    ///   - Cyan   (#2dd4f0) for 41–75%
+    ///   - Orange (#f59e0b) for 76–89%
+    ///   - Red    (#ef4444) for 90–100%
+    ///
+    /// Also displays the active session cumulative tokens used (e.g. "TOTAL: 1,547 tokens used").
+    pub fn set_context(&self, tokens_used: usize, n_ctx: usize, total_tokens: usize) {
+        self.block_signals();
+
+        // Update polling state.
+        *self.polling_state.borrow_mut() = PollingState::Active { tokens_used, n_ctx };
+
+        // Calculate percentage for the progress bar.
+        let percentage = if n_ctx > 0 {
+            tokens_used as f64 / n_ctx as f64
+        } else {
+            0.0
+        };
+        self.context_bar.set_fraction(percentage.min(1.0));
+
+        // 4-tier color: pick the CSS class for progress bar and label.
+        let (bar_class, label_class) = if percentage >= 0.90 {
+            ("ctx-red", "ctx-text-red")
+        } else if percentage >= 0.76 {
+            ("ctx-orange", "ctx-text-orange")
+        } else if percentage >= 0.41 {
+            ("ctx-cyan", "ctx-text-cyan")
+        } else {
+            ("ctx-green", "ctx-text-green")
+        };
+
+        self.context_bar
+            .set_css_classes(&["progressbar", bar_class]);
+
+        // Helper to format integers with thousands separators (e.g. 1,547).
+        let fmt = |n: usize| -> String {
+            let s = n.to_string();
+            let chars: Vec<char> = s.chars().rev().collect();
+            let mut result = String::new();
+            for (i, ch) in chars.iter().enumerate() {
+                if i > 0 && i % 3 == 0 {
+                    result.push(',');
+                }
+                result.push(*ch);
+            }
+            result.chars().rev().collect::<String>()
+        };
+
+        // Format the context label: "32,763 / 262,144 tokens (12.5%)".
+        let text = format!(
+            "{} / {} tokens ({:.1}%)",
+            fmt(tokens_used),
+            fmt(n_ctx),
+            percentage * 100.0
+        );
+        self.context_label.set_text(&text);
+        self.context_label
+            .set_css_classes(&["caption", label_class]);
+
+        // Format the session total tokens used: "TOTAL: x,xxx tokens used".
+        if total_tokens > 0 {
+            self.total_tokens_label.set_markup(&format!(
+                "<b>TOTAL: {} tokens used</b>",
+                fmt(total_tokens)
+            ));
+            self.total_tokens_label.set_visible(true);
+        } else {
+            self.total_tokens_label.set_text("");
+            self.total_tokens_label.set_visible(false);
+        }
+
+        self.unblock_signals();
+    }
+
+    /// Reset context display (clear progress bar and return to dim state).
+    pub fn clear_context(&self) {
+        self.block_signals();
+        *self.polling_state.borrow_mut() = PollingState::Inactive;
+        self.context_bar.set_fraction(0.0);
+        self.context_label.set_text("");
+        self.total_tokens_label.set_text("");
+        self.total_tokens_label.set_visible(false);
+        self.unblock_signals();
+    }
     /// Set the live generation speed label (e.g., "⚡ 41.5 tok/s").
     ///
     /// Called from the main thread when a new /slots response includes

@@ -44,6 +44,7 @@ pub fn trigger_auto_restart(
         decoded_tokens: 0,
         is_processing: false,
         elapsed_duration_sec: None,
+        total_tokens: 0,
     });
 
     let bg_model_id = model_id.to_string();

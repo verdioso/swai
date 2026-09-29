@@ -12,7 +12,7 @@ pub struct ModelCard {
     /// Current UI-visible state (interior mutability).
     state: Rc<RefCell<CardState>>,
     /// Context polling state (interior mutability).
-    polling_state: Rc<RefCell<PollingState>>,
+    pub(crate) polling_state: Rc<RefCell<PollingState>>,
     /// The card container (vertical box with all widgets).
     pub widget: GtkBox,
     /// Bold model name label.
@@ -30,9 +30,11 @@ pub struct ModelCard {
     /// Live stopwatch label (⏱ 4.2s).
     pub(crate) stopwatch_label: Label,
     /// Context progress bar (4px thin bar).
-    context_bar: ProgressBar,
+    pub(crate) context_bar: ProgressBar,
     /// Context usage label below the progress bar.
-    context_label: Label,
+    pub(crate) context_label: Label,
+    /// Cumulative active session tokens label (TOTAL: xxxx tokens used).
+    pub(crate) total_tokens_label: Label,
     /// Restart button (icon).
     pub restart_button: Button,
     /// Logs button (icon) — opens a log viewer window for this model's log file.
@@ -157,14 +159,26 @@ impl ModelCard {
         context_bar.set_hexpand(true);
         context_bar.set_css_classes(&["progressbar"]);
 
-        // ── Row 3: Context usage text ──────────────────────────────
+        // ── Row 3: Context usage text (left) & Total session tokens (right) ──
+        let bottom_row = GtkBox::new(Orientation::Horizontal, 8);
+        bottom_row.set_hexpand(true);
+
         let context_label = Label::new(Some(""));
         context_label.set_css_classes(&["caption", "dim-label"]);
         context_label.set_halign(gtk::Align::Start);
+        context_label.set_hexpand(true);
+
+        let total_tokens_label = Label::new(Some(""));
+        total_tokens_label.set_css_classes(&["caption"]);
+        total_tokens_label.set_halign(gtk::Align::End);
+        total_tokens_label.set_visible(false);
+
+        bottom_row.append(&context_label);
+        bottom_row.append(&total_tokens_label);
 
         card.append(&top_row);
         card.append(&context_bar);
-        card.append(&context_label);
+        card.append(&bottom_row);
 
         Self {
             config: config.clone(),
@@ -180,6 +194,7 @@ impl ModelCard {
             stopwatch_label,
             context_bar,
             context_label,
+            total_tokens_label,
             restart_button,
             logs_button,
             signal_block: Rc::new(Cell::new(false)),
@@ -315,79 +330,6 @@ impl ModelCard {
         self.signal_block.set(false);
     }
 
-    /// Update the context usage display and polling state.
-    ///
-    /// Called from the main thread (via `glib::MainContext::default().invoke()`)
-    /// when a new /slots response is received.
-    ///
-    /// Renders context as a 4px GtkProgressBar with 4-tier coloring:
-    ///   - Green  (#4ade80) for 0–40%
-    ///   - Cyan   (#2dd4f0) for 41–75%
-    ///   - Orange (#f59e0b) for 76–89%
-    ///   - Red    (#ef4444) for 90–100%
-    pub fn set_context(&self, tokens_used: usize, n_ctx: usize) {
-        self.block_signals();
-
-        // Update polling state.
-        *self.polling_state.borrow_mut() = PollingState::Active { tokens_used, n_ctx };
-
-        // Calculate percentage for the progress bar.
-        let percentage = if n_ctx > 0 {
-            tokens_used as f64 / n_ctx as f64
-        } else {
-            0.0
-        };
-        self.context_bar.set_fraction(percentage.min(1.0));
-
-        // 4-tier color: pick the CSS class for progress bar and label.
-        let (bar_class, label_class) = if percentage >= 0.90 {
-            ("ctx-red", "ctx-text-red")
-        } else if percentage >= 0.76 {
-            ("ctx-orange", "ctx-text-orange")
-        } else if percentage >= 0.41 {
-            ("ctx-cyan", "ctx-text-cyan")
-        } else {
-            ("ctx-green", "ctx-text-green")
-        };
-
-        self.context_bar
-            .set_css_classes(&["progressbar", bar_class]);
-
-        // Format the context label: "32,763 / 262,144 tokens (12.5%)".
-        let fmt = |n: usize| -> String {
-            let s = n.to_string();
-            let chars: Vec<char> = s.chars().rev().collect();
-            let mut result = String::new();
-            for (i, ch) in chars.iter().enumerate() {
-                if i > 0 && i % 3 == 0 {
-                    result.push(',');
-                }
-                result.push(*ch);
-            }
-            result.chars().rev().collect::<String>()
-        };
-        let text = format!(
-            "{} / {} tokens ({:.1}%)",
-            fmt(tokens_used),
-            fmt(n_ctx),
-            percentage * 100.0
-        );
-        self.context_label.set_text(&text);
-        self.context_label
-            .set_css_classes(&["caption", label_class]);
-
-        self.unblock_signals();
-    }
-
-    /// Reset context display (clear progress bar and return to dim state).
-    #[allow(dead_code)]
-    pub fn clear_context(&self) {
-        self.block_signals();
-        *self.polling_state.borrow_mut() = PollingState::Inactive;
-        self.context_bar.set_fraction(0.0);
-        self.context_label.set_text("");
-        self.unblock_signals();
-    }
 
     /// Mark the restart button as "Restarting…" and disable it.
     pub fn disable_restart(&self) {

@@ -47,6 +47,7 @@ pub struct SlotUpdate {
     /// `Some(0.0)` means the request just started. `Some(t)` is the latched total
     /// when generation finishes (processing → idle).
     pub elapsed_duration_sec: Option<f64>,
+    pub total_tokens: usize,
 }
 
 /// A polled /slots response for a single model.

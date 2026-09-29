@@ -2053,3 +2053,44 @@ Real-time token streaming and live stage card updates in the GTK4 Debate Arena (
 ### Test results
 - `cargo check --workspace` passes cleanly.
 - `SWAI_NO_SINGLE_INSTANCE=1 cargo test --workspace -- --test-threads=1` passes successfully (353 passed).
+
+## Phase (Council Multi-Turn Fix & Claude Code End-to-End Success) — SSE Progress Streaming, Arena CPU Busy-Wait Fix, Multi-Turn Tool Result Extraction, and Live Cumulative Token Tracking
+
+### What was fixed & built
+
+1. **Arena Live View Synthesizer Leftover Fix:**
+   - In `app/src/arena/stream.rs`, mapped the badge to `PLANNER` in emerald green (`#34d399`) instead of fallback `AI`.
+   - In `app/src/arena/view.rs`, mapped `CouncilRole::Planner` directly to `#34d399`.
+
+2. **ArenaWindow 100% CPU Busy-Wait Fix:**
+   - In `app/src/arena/window.rs`, replaced `rx.try_recv()` + `std::thread::yield_now()` busy-loop with `rx.blocking_recv()`.
+   - Reduced CPU utilization during live debates from 99.7% to 0% idle, eliminating thread starvation and allowing llama-server full hardware compute.
+
+3. **Turn-2 Multi-Turn Tool Result Extraction & Workspace Detection:**
+   - In `core/src/proxy/prompt.rs`, updated `extract_prompt_from_body` to handle Anthropic `tool_result` content arrays without overwriting the initial user prompt with raw file contents.
+   - Added `clean_user_prompt` to strip `<system-reminder>` wrappers.
+   - Created `core/src/proxy/workspace.rs` to keep `prompt.rs` strictly under 450 lines.
+   - In `core/src/council/tools.rs`, added fallback in `detect_workspace_root()` so requests default to the project directory rather than `$HOME`.
+
+4. **Model Card Cumulative Session Token Tracking:**
+   - In `app/src/model_card/view.rs` and `app/src/model_card/telemetry.rs`, implemented a two-sided Row 3 layout:
+     - Left: slot occupancy (`1,547 / 262,144 tokens (0.6%)`).
+     - Right: cumulative session tokens (`TOTAL: x,xxx tokens used`).
+   - In `app/src/window/poller.rs`, parsed Prometheus `/metrics` (`llamacpp:prompt_tokens_total` + `tokens_predicted_total`) with continuous session fallback so token counts do not reset when slots return to idle.
+   - Refactored `set_context` and `clear_context` into `telemetry.rs` to maintain `< 450 lines` across all files.
+
+5. **First Real-World End-to-End Claude Code Multi-Turn Refactor:**
+   - Connected Claude Code to SWAI over Anthropic proxy with live 3-second SSE keepalive streaming.
+   - Multi-agent orchestration succeeded:
+     - Planner (Ornith 1.5 Opt) methodically inspected the directory structure.
+     - Generator (Bonsai 2) cleanly generated structured JSON tool calls without markdown fences.
+     - Auditor (Ornith 1.5 Opt) reviewed code and evaluated unit tests.
+   - Claude Code executed the plan and successfully refactored `core/src/council/frontier.rs` (1,048 lines) into `frontier/` submodule (10 files, all strictly `< 450 lines`, 19/19 tests passing).
+   - Full workspace test suite: 386/386 passed.
+
+### Next Steps (Council Acceleration)
+- Documented in `PLAN/PHASES/extra-plan.md`:
+  - Upfront workspace snapshot injection in Turn 0.
+  - Concise thinking directives for Planner and Auditor to eliminate verbose monologues.
+  - Fast-path Auditor approval on Iteration 1.
+  - Per-stage `max_tokens` configuration directly in Preferences > Council Pipeline UI.

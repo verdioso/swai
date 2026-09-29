@@ -33,6 +33,8 @@ pub fn spawn_context_poller(
             std::collections::HashMap::new();
         let mut last_was_processing: std::collections::HashMap<String, bool> =
             std::collections::HashMap::new();
+        let mut session_total_tokens: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
 
         while poll_running_clone.load(Ordering::SeqCst) {
             for _ in 0..20 {
@@ -62,13 +64,14 @@ pub fn spawn_context_poller(
                                     let now = std::time::Instant::now();
                                     let mut calculated_speed = slot_info.predicted_per_second;
                                     let mut prompt_speed = slot_info.prompt_per_second;
+                                    let mut metrics_tokens: Option<usize> = None;
 
                                     // Check Prometheus /metrics endpoint on llama-server
                                     let metrics_url = format!("http://127.0.0.1:{}/metrics", port);
                                     if let Ok(m_resp) = http_client.get(&metrics_url).send() {
                                         if m_resp.status().is_success() {
                                             if let Ok(m_body) = m_resp.text() {
-                                                let (p_speed, g_speed) =
+                                                let (p_speed, g_speed, m_tot) =
                                                     parse_metrics_response(&m_body);
                                                 if prompt_speed == 0.0 && p_speed > 0.0 {
                                                     prompt_speed = p_speed;
@@ -76,6 +79,7 @@ pub fn spawn_context_poller(
                                                 if calculated_speed == 0.0 && g_speed > 0.0 {
                                                     calculated_speed = g_speed;
                                                 }
+                                                metrics_tokens = m_tot;
                                             }
                                         }
                                     }
@@ -121,6 +125,28 @@ pub fn spawn_context_poller(
                                         None
                                     };
 
+                                    // ── Active Session Cumulative Tokens Tracking ──
+                                    if let Some(m_tot) = metrics_tokens {
+                                        session_total_tokens.insert(model_id.clone(), m_tot);
+                                    } else if was_processing && !is_processing {
+                                        let prev_tok =
+                                            last_tokens.get(model_id).map(|(t, _)| *t).unwrap_or(0);
+                                        session_total_tokens
+                                            .entry(model_id.clone())
+                                            .and_modify(|t| *t += prev_tok)
+                                            .or_insert(prev_tok);
+                                    }
+
+                                    let committed =
+                                        session_total_tokens.get(model_id).copied().unwrap_or(0);
+                                    let total_session_tokens = if metrics_tokens.is_some() {
+                                        committed
+                                    } else if is_processing {
+                                        committed + slot_info.tokens_used
+                                    } else {
+                                        committed
+                                    };
+
                                     last_was_processing.insert(model_id.clone(), is_processing);
 
                                     let _ = slot_sender.send(SlotUpdate {
@@ -133,6 +159,7 @@ pub fn spawn_context_poller(
                                         decoded_tokens: slot_info.decoded_tokens,
                                         is_processing: slot_info.is_processing,
                                         elapsed_duration_sec: elapsed_duration,
+                                        total_tokens: total_session_tokens,
                                     });
 
                                     if auto_restart_enabled
@@ -348,21 +375,32 @@ pub fn parse_slots_response(body: &str) -> Option<SlotInfo> {
     }
 }
 
-/// Parse prompt_per_second and predicted_per_second from /metrics Prometheus text.
-pub fn parse_metrics_response(body: &str) -> (f64, f64) {
+/// Parse prompt_per_second, predicted_per_second, and cumulative total tokens from /metrics Prometheus text.
+pub fn parse_metrics_response(body: &str) -> (f64, f64, Option<usize>) {
     let mut prompt_speed = 0.0;
     let mut gen_speed = 0.0;
+    let mut prompt_tokens_total: Option<usize> = None;
+    let mut gen_tokens_total: Option<usize> = None;
     for line in body.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("llamacpp:prompt_tokens_seconds ") {
-            if let Some(val_str) = trimmed.strip_prefix("llamacpp:prompt_tokens_seconds ") {
-                prompt_speed = val_str.trim().parse::<f64>().unwrap_or(0.0);
-            }
-        } else if trimmed.starts_with("llamacpp:predicted_tokens_seconds ") {
-            if let Some(val_str) = trimmed.strip_prefix("llamacpp:predicted_tokens_seconds ") {
-                gen_speed = val_str.trim().parse::<f64>().unwrap_or(0.0);
-            }
+        let stripped = trimmed.strip_prefix("llamacpp:").unwrap_or(trimmed);
+        if let Some(val_str) = stripped.strip_prefix("prompt_tokens_seconds ") {
+            prompt_speed = val_str.trim().parse::<f64>().unwrap_or(0.0);
+        } else if let Some(val_str) = stripped.strip_prefix("predicted_tokens_seconds ") {
+            gen_speed = val_str.trim().parse::<f64>().unwrap_or(0.0);
+        } else if let Some(val_str) = stripped.strip_prefix("prompt_tokens_total ") {
+            prompt_tokens_total = val_str.trim().parse::<usize>().ok();
+        } else if let Some(val_str) = stripped.strip_prefix("tokens_predicted_total ") {
+            gen_tokens_total = val_str.trim().parse::<usize>().ok();
+        } else if let Some(val_str) = stripped.strip_prefix("predicted_tokens_total ") {
+            gen_tokens_total = val_str.trim().parse::<usize>().ok();
         }
     }
-    (prompt_speed, gen_speed)
+    let total_tokens = match (prompt_tokens_total, gen_tokens_total) {
+        (Some(p), Some(g)) => Some(p + g),
+        (Some(p), None) => Some(p),
+        (None, Some(g)) => Some(g),
+        (None, None) => None,
+    };
+    (prompt_speed, gen_speed, total_tokens)
 }

@@ -116,34 +116,23 @@ impl ArenaWindow {
 
         std::thread::spawn(move || {
             loop {
-                // `try_recv` is synchronous and non-blocking, which is exactly
-                // what we want on this dedicated bridge thread.
-                match rx.try_recv() {
+                match rx.blocking_recv() {
                     Ok(event) => {
                         if let Some(action) = event_to_action(&event) {
-                            // If the send fails the UI went away; stop.
                             if tx.send(action).is_err() {
                                 break;
                             }
                         }
-                        // Terminal events end the loop after forwarding.
                         if matches!(event, CouncilEvent::PipelineCompleted { .. })
                             || matches!(event, CouncilEvent::PipelineFailed { .. })
                         {
                             break;
                         }
                     }
-                    // Channel closed: debate finished.
-                    Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
-                    // Fell behind: skip to the latest and keep going.
-                    Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
-                    // No new events yet: brief yield, then poll again.
-                    Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
-                        std::thread::yield_now()
-                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 }
             }
-            // Drop the sender so the UI receiver sees EOF when the debate ends.
             drop(tx);
         });
 

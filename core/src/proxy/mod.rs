@@ -23,6 +23,7 @@ pub mod state;
 pub mod streaming;
 pub mod tool_calling;
 pub mod tool_sanitizer;
+pub mod workspace;
 #[cfg(test)]
 mod tests_council;
 #[cfg(test)]

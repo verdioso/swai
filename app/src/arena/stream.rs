@@ -237,14 +237,14 @@ impl StageBubbleCard {
         header.set_halign(gtk::Align::Fill);
 
         let role_name = model.role_label.as_deref().unwrap_or("STAGE");
-        let (role_caps, color, css_class) = if role_name.contains("Generator") {
+        let (role_caps, color, css_class) = if role_name.contains("Planner") {
+            ("PLANNER", "#34d399", "planner")
+        } else if role_name.contains("Generator") {
             ("GENERATOR", "#38bdf8", "generator")
         } else if role_name.contains("Auditor") {
             ("AUDITOR", "#fbbf24", "auditor")
-        } else if role_name.contains("Synthesizer") || role_name.contains("Consensus") {
-            ("SYNTHESIZER", "#34d399", "synthesizer")
         } else {
-            ("AI", "#38bdf8", "generator")
+            ("PLANNER", "#34d399", "planner")
         };
 
         let title_label = gtk::Label::new(None);
