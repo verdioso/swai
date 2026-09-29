@@ -48,6 +48,39 @@ pub fn populate_debate_list(listbox: &gtk4::ListBox) {
     }
 }
 
+use std::cell::RefCell;
+use std::rc::Rc;
+use swai_core::council::DebateTranscript;
+
+/// Wire the sidebar selection handler to load debates into the transcript view.
+pub fn wire_sidebar(
+    debate_list: &gtk4::ListBox,
+    current_transcript: &Rc<RefCell<Option<DebateTranscript>>>,
+    stack: &gtk4::Stack,
+    transcript_view: &gtk4::ScrolledWindow,
+) {
+    let ct_clone = Rc::clone(current_transcript);
+    let debate_list = debate_list.clone();
+    let stack_clone = stack.clone();
+    let tv_clone = transcript_view.clone();
+    debate_list.connect_row_activated(move |_listbox, row| {
+        let label_text = row
+            .first_child()
+            .and_then(|w| w.downcast::<gtk4::Label>().ok())
+            .map(|label| label.text().to_string())
+            .unwrap_or_default();
+
+        if let Ok(transcript) = load_transcript(&label_text) {
+            *ct_clone.borrow_mut() = Some(transcript.clone());
+            tv_clone.set_child(Some(&super::view::create_transcript_view(&transcript)));
+            stack_clone.set_visible_child_name("saved");
+            tracing::info!("Loaded debate: {label_text}");
+        } else {
+            tracing::error!("Failed to load debate: {label_text}");
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

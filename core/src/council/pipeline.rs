@@ -13,57 +13,14 @@
 
 use crate::council::events::CouncilEvent;
 use crate::council::types::{
-    CouncilPipelineConfig, CouncilRole, DebateOutcome, DebateTranscript, FallbackAction,
+    CouncilPipelineConfig, CouncilRole, DebateOutcome, DebateTranscript,
     PipelineStage, TurnResult,
 };
+pub use crate::council::types::{CouncilError, DebateState};
 use crate::council::human_feedback;
 use crate::council::Executor;
 use std::time::Instant;
 
-/// Errors that can occur during council pipeline execution.
-#[derive(Debug, thiserror::Error)]
-pub enum CouncilError {
-    #[error("pipeline has no stages")]
-    EmptyPipeline,
-    #[error("stage failed: {0}")]
-    StageFailed(String),
-    #[error("aborted: {0}")]
-    Aborted(String),
-}
-
-/// Mutable state carried through a single debate execution.
-pub struct DebateState {
-    pub transcript: DebateTranscript,
-    pub draft: Option<String>,
-    pub planner_directive: Option<crate::council::planner::PlannerDirective>,
-    pub audit_results: Vec<String>,
-    pub warnings: Vec<String>,
-    pub aborted: bool,
-}
-
-impl DebateState {
-    pub fn new(session_id: String, input_prompt: String, config: CouncilPipelineConfig) -> Self {
-        Self {
-            transcript: DebateTranscript::new(session_id, input_prompt, config),
-            draft: None,
-            planner_directive: None,
-            audit_results: Vec::new(),
-            warnings: Vec::new(),
-            aborted: false,
-        }
-    }
-
-    pub fn handle_failure(&mut self, fallback: &FallbackAction, _turn_index: usize, error: &str) {
-        match fallback {
-            FallbackAction::Abort => {
-                self.warnings.push(format!("Stage failed (abort): {error}"));
-                self.aborted = true;
-            }
-            FallbackAction::Skip => self.warnings.push(format!("Stage skipped: {error}")),
-            FallbackAction::Retry { max_retries } => self.warnings.push(format!("Stage retried {max_retries} times failed: {error}")),
-        }
-    }
-}
 
 /// The council debate engine.
 ///
@@ -149,6 +106,22 @@ impl<E: Executor> CouncilEngine<E> {
         let workspace = self.workspace.clone().unwrap_or_else(|| crate::council::tools::detect_workspace_root());
         let mut inspection_count = 0;
 
+        if let Some(stage) = self.config.stages.iter().find(|s| s.role == CouncilRole::Planner) {
+            self.emit(CouncilEvent::StageStarted {
+                stage_index: 0,
+                role: CouncilRole::Planner,
+                model_id: stage.model_id.clone(),
+                model_name: stage.model_id.clone(),
+            });
+            let welcome = "Welcome! Agents, stay steady. I'm taking a quick look at all available tools and skills in our workspace, then I'll orchestrate a clear, step-by-step plan for us.";
+            self.emit(CouncilEvent::StageCompleted {
+                stage_index: 0,
+                full_text: welcome.to_string(),
+                duration_sec: 0.0,
+                tok_per_sec: 0.0,
+            });
+        }
+
         loop {
             crate::council::planner::run_planner_stage(
                 &self.config.stages,
@@ -175,7 +148,13 @@ impl<E: Executor> CouncilEngine<E> {
                     ) {
                         // Append the tool result to the input prompt so the
                         // Planner sees it on the next invocation.
-                        let tool_desc = format!("{} {}", dir.tool, dir.target);
+                        let tool_desc = format!("🔍 Exploring: {} {}", dir.tool, dir.target);
+                        self.emit(CouncilEvent::StageCompleted {
+                            stage_index: 0,
+                            full_text: format!("🔍 Exploring: {} {}", dir.tool, dir.target),
+                            duration_sec: 0.0,
+                            tok_per_sec: 0.0,
+                        });
                         let header = if state.transcript.input_prompt.contains("Execution History & Tool Results:") {
                             String::new()
                         } else {

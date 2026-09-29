@@ -4,7 +4,7 @@ use tracing::{debug, error};
 
 use super::anthropic::process_anthropic_payload;
 pub use super::council::{
-    extract_model_from_body, is_council_model,
+    extract_model_from_body, is_auxiliary_request, is_council_model,
     parse_pipeline_header, should_run_council_universal, ProxyExecutor,
 };
 pub use super::council_sse::{build_council_sse_events, escape_sse_text};
@@ -59,7 +59,9 @@ pub fn handle_proxy_request(mut req: Request, state: Arc<Mutex<ProxyState>>, cli
     // requesting a council virtual model.
     let model_id_opt = extract_model_from_body(&request_body);
     let enable_council_flag = state.lock().map(|s| s.enable_council).unwrap_or(false);
-    let run_council = if let Some(ref mid) = model_id_opt {
+    let run_council = if is_auxiliary_request(&request_body) {
+        false
+    } else if let Some(ref mid) = model_id_opt {
         is_council_model(mid) || should_run_council_universal(&req, &state, &request_body)
     } else {
         false

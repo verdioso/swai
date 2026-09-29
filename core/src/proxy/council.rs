@@ -341,22 +341,42 @@ pub fn is_auxiliary_request(body: &[u8]) -> bool {
             }
         }
         if let Some(messages) = json.get("messages").and_then(|m| m.as_array()) {
-
             for msg in messages {
-                if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
-                    let lower = content.to_lowercase();
-                    if lower.contains("title") && msg.get("role").and_then(|r| r.as_str()) == Some("system") {
-                        return true;
+                let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or_default();
+                let text = if let Some(s) = msg.get("content").and_then(|c| c.as_str()) {
+                    s.to_string()
+                } else if let Some(arr) = msg.get("content").and_then(|c| c.as_array()) {
+                    let mut joined = String::new();
+                    for item in arr {
+                        if let Some(t) = item.get("text").and_then(|t| t.as_str()) {
+                            joined.push_str(t);
+                            joined.push(' ');
+                        }
                     }
-                    if (lower.contains("write the title") || lower.contains("<session>")) && msg.get("role").and_then(|r| r.as_str()) == Some("user") {
-                        return true;
-                    }
+                    joined
+                } else {
+                    String::new()
+                };
+
+                let lower = text.to_lowercase();
+                if role == "system" && lower.contains("title") {
+                    return true;
+                }
+                if role == "user"
+                    && (lower.contains("write the title")
+                        || lower.contains("<session>")
+                        || lower.contains("name the session")
+                        || lower.contains("session title")
+                        || lower.contains("session name"))
+                {
+                    return true;
                 }
             }
         }
     }
     false
 }
+
 
 /// Determine whether council debate should run universally across all models.
 pub fn should_run_council_universal(

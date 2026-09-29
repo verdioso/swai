@@ -37,6 +37,8 @@ pub struct ArenaWindow {
     stack: gtk::Stack,
     /// Right panel containing the transcript view.
     transcript_view: gtk::ScrolledWindow,
+    /// ScrolledWindow containing the live stream panel.
+    live_scroll: gtk::ScrolledWindow,
     /// The "Chime In" human-in-the-loop control, shown in the header while a
     /// live debate runs.
     chime_in: ChimeIn,
@@ -52,14 +54,14 @@ impl ArenaWindow {
     /// Create a new ArenaWindow.
     pub fn new() -> Self {
         let proxy_state = Rc::new(RefCell::new(None));
-        let (widget, debate_list, live_panel, live_empty, stack, transcript_view, chime_in) =
+        let (widget, debate_list, live_panel, live_empty, stack, transcript_view, live_scroll, chime_in) =
             build_window(&proxy_state);
 
         let stage_cards = Rc::new(RefCell::new(Vec::new()));
         let current_transcript = Rc::new(RefCell::new(None::<DebateTranscript>));
         let observed_rx = Rc::new(RefCell::new(None));
 
-        wire_sidebar(&debate_list, &current_transcript, &stack, &transcript_view);
+        history::wire_sidebar(&debate_list, &current_transcript, &stack, &transcript_view);
 
         Self {
             widget,
@@ -69,6 +71,7 @@ impl ArenaWindow {
             live_empty,
             stack,
             transcript_view,
+            live_scroll,
             chime_in,
             current_transcript,
             observed_rx,
@@ -152,16 +155,34 @@ impl ArenaWindow {
         let empty = self.live_empty.clone();
         let stack = self.stack.clone();
         let debate_list = self.debate_list.clone();
+        let live_scroll = self.live_scroll.clone();
+        let auto_scroll_active = Rc::new(std::cell::Cell::new(true));
+        let vadj = live_scroll.vadjustment();
+        let auto_scroll_clone = auto_scroll_active.clone();
+        vadj.connect_value_changed(move |adj| {
+            let max = adj.upper() - adj.page_size();
+            let diff = max - adj.value();
+            if diff > 35.0 {
+                auto_scroll_clone.set(false);
+            } else {
+                auto_scroll_clone.set(true);
+            }
+        });
+
         let _ = glib::timeout_add_local(std::time::Duration::from_millis(20), move || {
             loop {
                 match rx_ui.try_recv() {
                     Ok(action) => {
                         stack.set_visible_child_name("live");
                         apply_action_to_panel(&panel, &cards, &empty, &action);
+                        if auto_scroll_active.get() {
+                            let adj = live_scroll.vadjustment();
+                            adj.set_value(adj.upper() - adj.page_size());
+                        }
                     }
                     Err(std::sync::mpsc::TryRecvError::Empty) => break,
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        populate_debate_list(&debate_list);
+                        history::populate_debate_list(&debate_list);
                         return glib::ControlFlow::Break;
                     }
                 }
@@ -242,6 +263,7 @@ fn build_window(
     gtk::Label,
     gtk::Stack,
     gtk::ScrolledWindow,
+    gtk::ScrolledWindow,
     ChimeIn,
 ) {
     let widget = gtk::ApplicationWindow::builder()
@@ -291,7 +313,7 @@ fn build_window(
     let debate_list = gtk::ListBox::new();
     debate_list.set_selection_mode(gtk::SelectionMode::Single);
     debate_list.add_css_class("navigation-sidebar");
-    populate_debate_list(&debate_list);
+    history::populate_debate_list(&debate_list);
 
     let sidebar_scroll = gtk::ScrolledWindow::new();
     sidebar_scroll.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
@@ -400,37 +422,9 @@ fn build_window(
         live_empty,
         stack,
         transcript_view,
+        live_scroll,
         chime_in,
     )
-}
-
-/// Wire the sidebar selection handler to load debates into the transcript view.
-fn wire_sidebar(
-    debate_list: &gtk::ListBox,
-    current_transcript: &Rc<RefCell<Option<DebateTranscript>>>,
-    stack: &gtk::Stack,
-    transcript_view: &gtk::ScrolledWindow,
-) {
-    let ct_clone = Rc::clone(current_transcript);
-    let debate_list = debate_list.clone();
-    let stack_clone = stack.clone();
-    let tv_clone = transcript_view.clone();
-    debate_list.connect_row_activated(move |_listbox, row| {
-        let label_text = row
-            .first_child()
-            .and_then(|w| w.downcast::<gtk::Label>().ok())
-            .map(|label| label.text().to_string())
-            .unwrap_or_default();
-
-        if let Ok(transcript) = history::load_transcript(&label_text) {
-            *ct_clone.borrow_mut() = Some(transcript.clone());
-            tv_clone.set_child(Some(&view::create_transcript_view(&transcript)));
-            stack_clone.set_visible_child_name("saved");
-            tracing::info!("Loaded debate: {label_text}");
-        } else {
-            tracing::error!("Failed to load debate: {label_text}");
-        }
-    });
 }
 
 /// Wire the "Chime In" widget's decision handler.

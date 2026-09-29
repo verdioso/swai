@@ -214,3 +214,51 @@ impl DebateOutcome {
         }
     }
 }
+
+/// Errors that can occur during council pipeline execution.
+#[derive(Debug, thiserror::Error)]
+pub enum CouncilError {
+    #[error("pipeline has no stages")]
+    EmptyPipeline,
+    #[error("stage failed: {0}")]
+    StageFailed(String),
+    #[error("aborted: {0}")]
+    Aborted(String),
+}
+
+/// Mutable state carried through a single debate execution.
+pub struct DebateState {
+    pub transcript: DebateTranscript,
+    pub draft: Option<String>,
+    pub planner_directive: Option<crate::council::planner::PlannerDirective>,
+    pub audit_results: Vec<String>,
+    pub warnings: Vec<String>,
+    pub aborted: bool,
+}
+
+impl DebateState {
+    pub fn new(session_id: String, input_prompt: String, config: CouncilPipelineConfig) -> Self {
+        Self {
+            transcript: DebateTranscript::new(session_id, input_prompt, config),
+            draft: None,
+            planner_directive: None,
+            audit_results: Vec::new(),
+            warnings: Vec::new(),
+            aborted: false,
+        }
+    }
+
+    pub fn handle_failure(&mut self, fallback: &FallbackAction, _turn_index: usize, error: &str) {
+        match fallback {
+            FallbackAction::Abort => {
+                self.warnings.push(format!("Stage failed (abort): {error}"));
+                self.aborted = true;
+            }
+            FallbackAction::Skip => self.warnings.push(format!("Stage skipped: {error}")),
+            FallbackAction::Retry { max_retries } => {
+                self.warnings.push(format!("Stage retried {max_retries} times failed: {error}"))
+            }
+        }
+    }
+}
+

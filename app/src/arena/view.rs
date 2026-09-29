@@ -145,3 +145,4 @@ pub fn create_transcript_view(transcript: &DebateTranscript) -> gtk::ScrolledWin
     scrolled.set_child(Some(&container));
     scrolled
 }
+
