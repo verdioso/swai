@@ -21,9 +21,13 @@ mod tests;
 #[cfg(test)]
 mod tests_pipeline;
 #[cfg(test)]
+mod tests_planner;
+#[cfg(test)]
 mod tests_sse;
 #[cfg(test)]
 mod tests_streaming;
+#[cfg(test)]
+mod tests_tools;
 
 pub use barrier::CouncilPauseController;
 pub use events::CouncilEvent;

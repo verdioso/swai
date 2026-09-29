@@ -70,6 +70,89 @@ pub fn extract_system_prompt_from_body(body: &[u8]) -> Option<String> {
 pub fn extract_prompt_from_body(body: &[u8]) -> Option<String> {
     let json_val = serde_json::from_slice::<serde_json::Value>(body).ok()?;
     let messages = json_val.get("messages").and_then(|m| m.as_array())?;
+
+    // Check if there are tool results or tool calls in history
+    let mut tool_history = Vec::new();
+    let mut initial_user_prompt = None;
+
+    for msg in messages {
+        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or_default();
+        if role == "user" {
+            if let Some(arr) = msg.get("content").and_then(|c| c.as_array()) {
+                let mut has_tool_result = false;
+                for block in arr {
+                    if block.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
+                        has_tool_result = true;
+                        let output = block
+                            .get("content")
+                            .and_then(|c| c.as_str())
+                            .or_else(|| block.get("text").and_then(|t| t.as_str()))
+                            .unwrap_or("(success)");
+                        let capped = if output.len() > 4096 { &output[..4096] } else { output };
+                        tool_history.push(format!("Result:\n{}\n---", capped));
+                    }
+                }
+                if !has_tool_result && initial_user_prompt.is_none() {
+                    if let Some(text) = extract_message_text(msg) {
+                        initial_user_prompt = Some(text);
+                    }
+                }
+            } else if initial_user_prompt.is_none() {
+                if let Some(text) = extract_message_text(msg) {
+                    initial_user_prompt = Some(text);
+                }
+            }
+        } else if role == "assistant" {
+            if let Some(arr) = msg.get("content").and_then(|c| c.as_array()) {
+                for block in arr {
+                    if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                        let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
+                        let input = block.get("input").unwrap_or(&serde_json::Value::Null);
+                        let target = input.get("path")
+                            .or_else(|| input.get("target"))
+                            .or_else(|| input.get("file"))
+                            .or_else(|| input.get("command"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        tool_history.push(format!("Tool: {} | Target: {}", name, target));
+                    }
+                }
+            }
+            if let Some(tool_calls) = msg.get("tool_calls").and_then(|tc| tc.as_array()) {
+                for tc in tool_calls {
+                    let func = tc.get("function");
+                    let name = func.and_then(|f| f.get("name")).and_then(|n| n.as_str()).unwrap_or("tool");
+                    let args_str = func.and_then(|f| f.get("arguments")).and_then(|a| a.as_str()).unwrap_or("");
+                    let target = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(args_str) {
+                        parsed.get("path")
+                            .or_else(|| parsed.get("target"))
+                            .or_else(|| parsed.get("file"))
+                            .or_else(|| parsed.get("command"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string()
+                    } else {
+                        String::new()
+                    };
+                    tool_history.push(format!("Tool: {} | Target: {}", name, target));
+                }
+            }
+        } else if role == "tool" {
+            let output = msg.get("content").and_then(|c| c.as_str()).unwrap_or("(success)");
+            let capped = if output.len() > 4096 { &output[..4096] } else { output };
+            tool_history.push(format!("Result:\n{}\n---", capped));
+        }
+    }
+
+    if !tool_history.is_empty() && initial_user_prompt.is_some() {
+        let base = initial_user_prompt.unwrap();
+        let history_str = tool_history.join("\n");
+        return Some(format!(
+            "{}\n\nExecution History & Tool Results:\n---\n{}",
+            base, history_str
+        ));
+    }
+
     for msg in messages.iter().rev() {
         if msg.get("role").and_then(|r| r.as_str()) == Some("user") {
             if let Some(text) = extract_message_text(msg) {
@@ -79,6 +162,7 @@ pub fn extract_prompt_from_body(body: &[u8]) -> Option<String> {
     }
     None
 }
+
 
 fn is_plausible_abs_path(s: &str) -> bool {
     if s.starts_with('/') {
@@ -346,94 +430,3 @@ pub fn extract_workspace_from_body(body: &[u8]) -> Option<String> {
     fallback
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_extract_workspace_top_level_cwd() {
-        let json = serde_json::json!({
-            "cwd": "/mnt/orico/Documents/ApplicationsRAW/swai",
-            "messages": [{"role": "user", "content": "hi"}]
-        });
-        let body = serde_json::to_vec(&json).unwrap();
-        assert_eq!(
-            extract_workspace_from_body(&body),
-            Some("/mnt/orico/Documents/ApplicationsRAW/swai".into())
-        );
-    }
-
-    #[test]
-    fn test_extract_workspace_from_system_string() {
-        let json = serde_json::json!({
-            "system": "You are Claude Code.\nWorking directory: /var/log\nOther info",
-            "messages": [{"role": "user", "content": "hi"}]
-        });
-        let body = serde_json::to_vec(&json).unwrap();
-        assert_eq!(
-            extract_workspace_from_body(&body),
-            Some("/var/log".into())
-        );
-    }
-
-    #[test]
-    fn test_extract_workspace_from_system_array() {
-        let json = serde_json::json!({
-            "system": [
-                {"type": "text", "text": "Environment context:\nWorking directory: /tmp\n"}
-            ],
-            "messages": [{"role": "user", "content": "hi"}]
-        });
-        let body = serde_json::to_vec(&json).unwrap();
-        assert_eq!(
-            extract_workspace_from_body(&body),
-            Some("/tmp".into())
-        );
-    }
-
-    #[test]
-    fn test_extract_workspace_from_user_message_xml_tag() {
-        let json = serde_json::json!({
-            "messages": [
-                {"role": "user", "content": "<cwd>/tmp</cwd>\nFix this bug"}
-            ]
-        });
-        let body = serde_json::to_vec(&json).unwrap();
-        assert_eq!(
-            extract_workspace_from_body(&body),
-            Some("/tmp".into())
-        );
-    }
-
-    #[test]
-    fn test_extract_workspace_from_user_message_blocks() {
-        let json = serde_json::json!({
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "Current working directory: /tmp\nProceed"}
-                    ]
-                }
-            ]
-        });
-        let body = serde_json::to_vec(&json).unwrap();
-        assert_eq!(
-            extract_workspace_from_body(&body),
-            Some("/tmp".into())
-        );
-    }
-
-    #[test]
-    fn test_extract_workspace_from_context_object() {
-        let json = serde_json::json!({
-            "context": {"cwd": "/tmp"},
-            "messages": [{"role": "user", "content": "hi"}]
-        });
-        let body = serde_json::to_vec(&json).unwrap();
-        assert_eq!(
-            extract_workspace_from_body(&body),
-            Some("/tmp".into())
-        );
-    }
-}

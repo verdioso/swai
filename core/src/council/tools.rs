@@ -268,15 +268,22 @@ pub fn execute_local_tool(
         "list_dir" | "ls" | "explore" => Some(list_dir(workspace, target)),
         "bash" | "bash_command" | "execute_command" | "run_command" | "terminal" => {
             // For bash-like tools, check if the command is a safe read-only command.
-            execute_safe_bash(workspace, target)
+            // If it is not in the safe allowlist, return None so it is forwarded to external CLI.
+            let res = execute_safe_bash(workspace, target)?;
+            if res.success {
+                Some(res)
+            } else {
+                None
+            }
         }
+
         _ => None,
     }
 }
 
 /// Execute a bash command only if it's in the safe allowlist.
 /// Allowed: cat, ls, find, grep, head, tail, wc, file, git status/log/diff/show.
-fn execute_safe_bash(workspace: &Path, command: &str) -> Option<ToolResult> {
+pub(crate) fn execute_safe_bash(workspace: &Path, command: &str) -> Option<ToolResult> {
     let trimmed = command.trim();
     if trimmed.is_empty() {
         return Some(ToolResult {
@@ -381,132 +388,3 @@ Only emit a write_file directive once you have enough context from inspection to
         .to_string()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-
-    fn setup_workspace() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().expect("create temp dir");
-        fs::write(dir.path().join("hello.txt"), "Hello, world!\nSecond line.\n").unwrap();
-        fs::create_dir_all(dir.path().join("src")).unwrap();
-        fs::write(dir.path().join("src/main.rs"), "fn main() {\n    println!(\"hi\");\n}\n").unwrap();
-        fs::create_dir_all(dir.path().join(".git")).unwrap();
-        fs::create_dir_all(dir.path().join("target/debug")).unwrap();
-        fs::write(dir.path().join("target/debug/binary"), "binary data").unwrap();
-        dir
-    }
-
-    #[test]
-    fn test_read_file_success() {
-        let ws = setup_workspace();
-        let result = read_file(ws.path(), "hello.txt");
-        assert!(result.success);
-        assert!(result.output.contains("Hello, world!"));
-        assert!(result.output.contains("Second line."));
-    }
-
-    #[test]
-    fn test_read_file_not_found() {
-        let ws = setup_workspace();
-        let result = read_file(ws.path(), "nonexistent.txt");
-        assert!(!result.success);
-        assert!(result.output.contains("does not exist"));
-    }
-
-    #[test]
-    fn test_read_file_escape_rejected() {
-        let ws = setup_workspace();
-        let result = read_file(ws.path(), "../../etc/passwd");
-        assert!(!result.success);
-        assert!(result.output.contains("does not exist") || result.output.contains("outside"));
-    }
-
-    #[test]
-    fn test_search_files_finds_match() {
-        let ws = setup_workspace();
-        let result = search_files(ws.path(), "println");
-        assert!(result.success);
-        assert!(result.output.contains("src/main.rs"));
-        assert!(result.output.contains("println"));
-    }
-
-    #[test]
-    fn test_search_files_skips_target_dir() {
-        let ws = setup_workspace();
-        let result = search_files(ws.path(), "binary data");
-        assert!(result.success);
-        assert!(result.output.contains("No matches"));
-    }
-
-    #[test]
-    fn test_search_files_no_match() {
-        let ws = setup_workspace();
-        let result = search_files(ws.path(), "zzz_nonexistent_pattern_zzz");
-        assert!(result.success);
-        assert!(result.output.contains("No matches"));
-    }
-
-    #[test]
-    fn test_list_dir_root() {
-        let ws = setup_workspace();
-        let result = list_dir(ws.path(), ".");
-        assert!(result.success);
-        assert!(result.output.contains("hello.txt"));
-        assert!(result.output.contains("src/"));
-    }
-
-    #[test]
-    fn test_list_dir_subdir() {
-        let ws = setup_workspace();
-        let result = list_dir(ws.path(), "src");
-        assert!(result.success);
-        assert!(result.output.contains("main.rs"));
-    }
-
-    #[test]
-    fn test_execute_local_tool_dispatch() {
-        let ws = setup_workspace();
-        let result = execute_local_tool(ws.path(), "read_file", "hello.txt");
-        assert!(result.is_some());
-        assert!(result.unwrap().success);
-
-        let result = execute_local_tool(ws.path(), "write_file", "foo.txt");
-        assert!(result.is_none()); // write_file is not a local tool
-    }
-
-    #[test]
-    fn test_safe_bash_allowed() {
-        let ws = setup_workspace();
-        let result = execute_safe_bash(ws.path(), "ls");
-        assert!(result.is_some());
-        assert!(result.unwrap().success);
-    }
-
-    #[test]
-    fn test_safe_bash_blocked() {
-        let ws = setup_workspace();
-        let result = execute_safe_bash(ws.path(), "rm -rf /");
-        assert!(result.is_some());
-        assert!(!result.unwrap().success);
-        assert!(execute_safe_bash(ws.path(), "rm -rf /").unwrap().output.contains("not in the read-only allowlist"));
-    }
-
-    #[test]
-    fn test_safe_bash_metachar_blocked() {
-        let ws = setup_workspace();
-        let result = execute_safe_bash(ws.path(), "cat hello.txt | grep world");
-        assert!(result.is_some());
-        assert!(!result.unwrap().success);
-        assert!(execute_safe_bash(ws.path(), "cat hello.txt | grep world").unwrap().output.contains("metacharacters"));
-    }
-
-    #[test]
-    fn test_local_tool_catalog_contains_tools() {
-        let catalog = local_tool_catalog();
-        assert!(catalog.contains("read_file"));
-        assert!(catalog.contains("search_files"));
-        assert!(catalog.contains("list_dir"));
-        assert!(catalog.contains("bash"));
-    }
-}

@@ -10,6 +10,18 @@ pub fn build_council_sse_events(
     available_tools: Option<&[serde_json::Value]>,
     is_openai: bool,
 ) -> Vec<Vec<u8>> {
+    build_council_sse_events_with_offset(outcome, model_id, prompt, available_tools, is_openai, false)
+}
+
+/// Build SSE events with optional offset when live progress was streamed prior to completion.
+pub fn build_council_sse_events_with_offset(
+    outcome: &DebateOutcome,
+    model_id: &str,
+    prompt: &str,
+    available_tools: Option<&[serde_json::Value]>,
+    is_openai: bool,
+    has_streamed_progress: bool,
+) -> Vec<Vec<u8>> {
     let mut events = Vec::new();
 
     let transcript = match outcome {
@@ -180,27 +192,38 @@ pub fn build_council_sse_events(
 
     if !is_aborted && super::tool_calling::extract_tool_call(&final_text, prompt, available_tools, outcome.target()).is_some() {
         let tool_call = super::tool_calling::extract_tool_call(&final_text, prompt, available_tools, outcome.target()).unwrap();
+        let tool_index = if has_streamed_progress { 1 } else { 0 };
+        if has_streamed_progress {
+            events.push(
+                b"event: content_block_stop\ndata: {\"type\": \"content_block_stop\", \"index\": 0}\n\n".to_vec()
+            );
+        }
         events.push(
             format!(
-                "event: content_block_start\ndata: {{\"type\": \"content_block_start\", \"index\": 0, \"content_block\": {{\"type\": \"tool_use\", \"id\": \"toolu_council_01\", \"name\": \"{}\", \"input\": {{}}}}}}\n\n",
-                tool_call.name
+                "event: content_block_start\ndata: {{\"type\": \"content_block_start\", \"index\": {}, \"content_block\": {{\"type\": \"tool_use\", \"id\": \"toolu_council_01\", \"name\": \"{}\", \"input\": {{}}}}}}\n\n",
+                tool_index, tool_call.name
             ).into_bytes()
         );
         events.push(
             format!(
-                "event: content_block_delta\ndata: {{\"type\": \"content_block_delta\", \"index\": 0, \"delta\": {{\"type\": \"input_json_delta\", \"partial_json\": \"{}\"}}}}\n\n",
-                escape_sse_text(&tool_call.arguments)
+                "event: content_block_delta\ndata: {{\"type\": \"content_block_delta\", \"index\": {}, \"delta\": {{\"type\": \"input_json_delta\", \"partial_json\": \"{}\"}}}}\n\n",
+                tool_index, escape_sse_text(&tool_call.arguments)
             ).into_bytes()
         );
         events.push(
-            "event: content_block_stop\ndata: {\"type\": \"content_block_stop\", \"index\": 0}\n\nevent: message_delta\ndata: {\"type\": \"message_delta\", \"delta\": {\"stop_reason\": \"tool_use\", \"stop_sequence\": null}, \"usage\": {\"output_tokens\": 10}}\n\nevent: message_stop\ndata: {\"type\": \"message_stop\"}\n\n".to_string().into_bytes()
+            format!(
+                "event: content_block_stop\ndata: {{\"type\": \"content_block_stop\", \"index\": {}}}\n\nevent: message_delta\ndata: {{\"type\": \"message_delta\", \"delta\": {{\"stop_reason\": \"tool_use\", \"stop_sequence\": null}}, \"usage\": {{\"output_tokens\": 10}}}}\n\nevent: message_stop\ndata: {{\"type\": \"message_stop\"}}\n\n",
+                tool_index
+            ).into_bytes()
         );
         return events;
     }
 
-    events.push(
-        "event: content_block_start\ndata: {\"type\": \"content_block_start\", \"index\": 0, \"content_block\": {\"type\": \"text\", \"text\": \"\"}}\n\n".to_string().into_bytes()
-    );
+    if !has_streamed_progress {
+        events.push(
+            "event: content_block_start\ndata: {\"type\": \"content_block_start\", \"index\": 0, \"content_block\": {\"type\": \"text\", \"text\": \"\"}}\n\n".to_string().into_bytes()
+        );
+    }
 
     let chunk_size = 50;
     let chars: Vec<char> = final_text.chars().collect();

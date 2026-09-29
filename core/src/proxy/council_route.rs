@@ -8,7 +8,7 @@ use super::council::{
     parse_pipeline_header, run_council_and_record_telemetry,
     EventProxyExecutor, ProxyExecutor,
 };
-use super::council_sse::build_council_sse_events;
+use super::council_sse::build_council_sse_events_with_offset;
 use super::router::{error_response, extract_prompt_from_body};
 use super::state::ProxyState;
 use super::streaming::{ResponsesSource, ResponsesStreamingBody};
@@ -123,6 +123,7 @@ pub fn handle_council_request(
         state: state.clone(),
     };
     let (tx, rx) = tokio::sync::broadcast::channel(BROADCAST_CAPACITY);
+    let mut cli_event_rx = tx.subscribe();
     let executor = EventProxyExecutor { inner };
     let mut engine = CouncilEngine::with_events(pipeline_config, executor, tx);
     if let Some(ws) = crate::proxy::prompt::extract_workspace_from_body(request_body) {
@@ -246,6 +247,9 @@ pub fn handle_council_request(
             "event: message_start\ndata: {{\"type\": \"message_start\", \"message\": {{\"id\": \"msg_council\", \"type\": \"message\", \"role\": \"assistant\", \"content\": [], \"model\": \"{}\", \"stop_reason\": null, \"stop_sequence\": null, \"usage\": {{\"input_tokens\": 0, \"output_tokens\": 0}}}}}}\n\n",
             model_id
         ).into_bytes());
+        let _ = sse_tx.send(
+            b"event: content_block_start\ndata: {\"type\": \"content_block_start\", \"index\": 0, \"content_block\": {\"type\": \"text\", \"text\": \"\"}}\n\n".to_vec()
+        );
     }
 
     let sse_tx_for_heartbeat = sse_tx.clone();
@@ -268,13 +272,59 @@ pub fn handle_council_request(
         }
     });
 
+    let sse_tx_for_events = sse_tx.clone();
+    let model_for_events = model_id.to_string();
+    let is_openai_for_events = is_openai;
+    let events_active = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let events_flag = events_active.clone();
+    std::thread::spawn(move || {
+        while events_flag.load(std::sync::atomic::Ordering::Relaxed) {
+            match cli_event_rx.blocking_recv() {
+                Ok(event) => match event {
+                    crate::council::CouncilEvent::StageStarted { role, model_name, .. } => {
+                        let msg = match role {
+                            crate::council::CouncilRole::Planner => {
+                                format!("📋 Planner ({}) analyzing task...\n", model_name)
+                            }
+                            crate::council::CouncilRole::Generator => {
+                                format!("⚡ Generator ({}) drafting atomic step...\n", model_name)
+                            }
+                            crate::council::CouncilRole::Auditor => {
+                                format!("🛡️ Auditor ({}) verifying implementation...\n", model_name)
+                            }
+                            _ => String::new(),
+                        };
+                        if !msg.is_empty() {
+                            send_cli_progress(&sse_tx_for_events, &msg, is_openai_for_events, &model_for_events);
+                        }
+                    }
+                    crate::council::CouncilEvent::StageCompleted { full_text, .. } => {
+                        if full_text.starts_with("Welcome!") {
+                            send_cli_progress(&sse_tx_for_events, &format!("{}\n\n", full_text), is_openai_for_events, &model_for_events);
+                        } else if full_text.starts_with("🔍 Exploring:") {
+                            send_cli_progress(&sse_tx_for_events, &format!("{}\n", full_text), is_openai_for_events, &model_for_events);
+                        }
+                    }
+                    crate::council::CouncilEvent::PipelineCompleted { .. }
+                    | crate::council::CouncilEvent::PipelineFailed { .. } => {
+                        break;
+                    }
+                    _ => {}
+                },
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+            }
+        }
+    });
+
     let model_str = model_id.to_string();
     let prompt_clone = prompt.clone();
     let tools_clone = available_tools.clone();
     std::thread::spawn(move || {
         let (outcome, _) = run_council_and_record_telemetry(&engine, &prompt_clone, &state_for_council);
         heartbeat_active.store(false, std::sync::atomic::Ordering::Relaxed);
-        let sse_events = build_council_sse_events(&outcome, &model_str, &prompt_clone, tools_clone.as_deref(), is_openai);
+        events_active.store(false, std::sync::atomic::Ordering::Relaxed);
+        let sse_events = build_council_sse_events_with_offset(&outcome, &model_str, &prompt_clone, tools_clone.as_deref(), is_openai, true);
         for event in sse_events {
             if sse_tx.send(event).is_err() {
                 break;
@@ -302,4 +352,36 @@ pub fn handle_council_request(
         None,
     );
     let _ = req.respond(response);
+}
+
+fn send_cli_progress(
+    sse_tx: &std::sync::mpsc::Sender<Vec<u8>>,
+    text: &str,
+    is_openai: bool,
+    model_id: &str,
+) {
+    if is_openai {
+        let payload = serde_json::json!({
+            "id": "chatcmpl_council",
+            "object": "chat.completion.chunk",
+            "created": 1725381000,
+            "model": model_id,
+            "choices": [{
+                "index": 0,
+                "delta": { "content": text },
+                "finish_reason": null
+            }]
+        });
+        let _ = sse_tx.send(format!("data: {}\n\n", payload).into_bytes());
+    } else {
+        let payload = serde_json::json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+                "type": "text_delta",
+                "text": text
+            }
+        });
+        let _ = sse_tx.send(format!("event: content_block_delta\ndata: {}\n\n", payload).into_bytes());
+    }
 }

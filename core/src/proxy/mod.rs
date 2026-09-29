@@ -26,6 +26,8 @@ pub mod tool_sanitizer;
 #[cfg(test)]
 mod tests_council;
 #[cfg(test)]
+mod tests_prompt;
+#[cfg(test)]
 mod tests_protocol;
 #[cfg(test)]
 mod tests_state;

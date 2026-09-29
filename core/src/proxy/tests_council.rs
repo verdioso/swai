@@ -70,7 +70,10 @@ mod tests {
             {"role": "tool", "tool_call_id": "call_1", "content": "Phase 35.1 details"}
         ]}"#;
         let extracted = extract_prompt_from_body(agentic_openai).unwrap();
-        assert_eq!(extracted, "Execute Phase 35.1: Keyring");
+        assert!(extracted.starts_with("Execute Phase 35.1: Keyring"));
+        assert!(extracted.contains("Execution History & Tool Results:"));
+        assert!(extracted.contains("read_file"));
+        assert!(extracted.contains("Phase 35.1 details"));
 
         // Multi-turn agentic loop (Anthropic format):
         let agentic_anthropic = br#"{"messages": [
@@ -79,7 +82,10 @@ mod tests {
             {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu_1", "content": "Phase 35.1 details"}]}
         ]}"#;
         let extracted_anthropic = extract_prompt_from_body(agentic_anthropic).unwrap();
-        assert_eq!(extracted_anthropic, "Execute Phase 35.1: Keyring");
+        assert!(extracted_anthropic.starts_with("Execute Phase 35.1: Keyring"));
+        assert!(extracted_anthropic.contains("Execution History & Tool Results:"));
+        assert!(extracted_anthropic.contains("read_file"));
+        assert!(extracted_anthropic.contains("Phase 35.1 details"));
     }
 
     #[test]
@@ -217,5 +223,53 @@ mod tests {
         let tool_resp = br#"{"messages": [{"role": "user", "content": "Create form.html"}, {"role": "assistant", "content": ""}, {"role": "tool", "content": "File created"}]}"#;
         // Tool responses in agentic loops are NOT auxiliary; they must run through Council
         assert!(!crate::proxy::council::is_auxiliary_request(tool_resp));
+    }
+
+    #[test]
+    fn test_build_council_sse_events_with_streamed_offset() {
+        let outcome = DebateOutcome::Success {
+            final_response: r#"{"name": "write_file", "arguments": {"path": "src/lib.rs", "content": "fn main() {}"}}"#.to_string(),
+            transcript: DebateTranscript::new(
+                "s1".into(),
+                "prompt".into(),
+                CouncilPipelineConfig::default(),
+            ),
+            target: Some("src/lib.rs".into()),
+            tool: Some("write_file".into()),
+        };
+
+        let tools = vec![serde_json::json!({
+            "name": "write_file",
+            "description": "Writes a file",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"}
+                }
+            }
+        })];
+
+        // With has_streamed_progress = true: content_block_stop for index 0 is emitted,
+        // and tool_use starts at index 1.
+        let events = crate::proxy::council_sse::build_council_sse_events_with_offset(
+            &outcome,
+            "council:debate",
+            "prompt",
+            Some(&tools),
+            false,
+            true,
+        );
+        let all = events
+            .iter()
+            .map(|e| String::from_utf8_lossy(e).to_string())
+            .collect::<Vec<_>>()
+            .join("");
+
+        assert!(all.contains(r#"{"type": "content_block_stop", "index": 0}"#));
+        assert!(all.contains(r#"{"type": "content_block_start", "index": 1"#));
+        assert!(all.contains(r#""name": "write_file""#));
+        assert!(all.contains(r#"{"type": "content_block_stop", "index": 1}"#));
+        assert!(all.contains("event: message_stop"));
     }
 }
